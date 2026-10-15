@@ -22,6 +22,7 @@ export interface GameState {
   status: Status;
   moves: number;
   extraUsed: boolean;
+  liftUsed: boolean;
 }
 
 export type GameEvent =
@@ -34,37 +35,52 @@ export type TapResult =
   | { kind: 'blocked'; blocker: number; dist: number }
   | { kind: 'ignored' };
 
-/** Precalcoli statici di un livello (i bus si muovono solo uscendo, quindi i blocchi sono fissi). */
+/**
+ * Precalcoli statici di un livello. I bus si muovono solo uscendo, quindi i blocchi
+ * sono fissi. Le celle davanti a un garage sono condivise da tutti i suoi bus, in
+ * ordine: è occupata dal primo non ancora uscito.
+ */
 export class Board {
-  readonly occ: Int16Array;
+  readonly occ: number[][];
+  readonly wall: Uint8Array;
   readonly paths: number[][];
   readonly blockers: number[][];
+  /** blocchi + bus precedente nel garage */
+  readonly deps: number[][];
+  readonly prev: number[];
 
   constructor(readonly level: Level) {
-    const { w, h, buses } = level;
-    this.occ = new Int16Array(w * h).fill(-1);
-    for (const b of buses) for (const [x, y] of busCells(b)) this.occ[y * w + x] = b.id;
-    this.paths = buses.map((b) => pathCells(b, w, h).map(([x, y]) => y * w + x));
-    this.blockers = this.paths.map((p) => {
+    const { gw, gh, buses } = level;
+    this.occ = Array.from({ length: gw * gh }, () => []);
+    this.wall = new Uint8Array(gw * gh);
+    for (const b of buses) for (const [x, y] of busCells(b)) this.occ[y * gw + x].push(b.id);
+    for (const g of level.garages) for (const [x, y] of busCells(g)) this.wall[y * gw + x] = 1;
+    this.prev = buses.map((b) => b.prev ?? -1);
+    this.paths = buses.map((b) => pathCells(b, gw, gh).map(([x, y]) => y * gw + x));
+    this.blockers = this.paths.map((p, id) => {
       const seen: number[] = [];
-      for (const c of p) {
-        const o = this.occ[c];
-        if (o >= 0 && !seen.includes(o)) seen.push(o);
-      }
+      for (const c of p) for (const o of this.occ[c]) if (o !== id && !seen.includes(o)) seen.push(o);
       return seen;
     });
+    this.deps = this.blockers.map((bl, id) => (this.prev[id] >= 0 ? [...bl, this.prev[id]] : bl));
+  }
+
+  /** il bus è fuori dal garage (o non ne ha uno) */
+  visible(s: GameState, id: number): boolean {
+    const p = this.prev[id];
+    return p < 0 || s.removed[p];
   }
 
   isFree(s: GameState, id: number): boolean {
-    for (const b of this.blockers[id]) if (!s.removed[b]) return false;
+    for (const b of this.deps[id]) if (!s.removed[b]) return false;
     return true;
   }
 
   firstBlocker(s: GameState, id: number): { id: number; dist: number } | null {
     const p = this.paths[id];
     for (let k = 0; k < p.length; k++) {
-      const o = this.occ[p[k]];
-      if (o >= 0 && !s.removed[o]) return { id: o, dist: k };
+      if (this.wall[p[k]]) return { id: -1, dist: k };
+      for (const o of this.occ[p[k]]) if (!s.removed[o]) return { id: o, dist: k };
     }
     return null;
   }
@@ -86,6 +102,7 @@ export function initialState(level: Level): GameState {
     status: 'playing',
     moves: 0,
     extraUsed: false,
+    liftUsed: false,
   };
 }
 
@@ -122,11 +139,7 @@ function settle(board: Board, s: GameState, events: GameEvent[]) {
   else s.status = 'playing';
 }
 
-/** Tocco su un bus. Modifica `s` sul posto. */
-export function tap(board: Board, s: GameState, id: number): TapResult {
-  if (s.status !== 'playing' || s.removed[id]) return { kind: 'ignored' };
-  const blk = board.firstBlocker(s, id);
-  if (blk) return { kind: 'blocked', blocker: blk.id, dist: blk.dist };
+function enterStall(board: Board, s: GameState, id: number): TapResult {
   const slot = s.slots.indexOf(null);
   if (slot < 0) return { kind: 'ignored' };
   const bus = board.level.buses[id];
@@ -137,6 +150,22 @@ export function tap(board: Board, s: GameState, id: number): TapResult {
   const events: GameEvent[] = [{ type: 'enter', id, slot }];
   settle(board, s, events);
   return { kind: 'moved', events };
+}
+
+/** Tocco su un bus. Modifica `s` sul posto. */
+export function tap(board: Board, s: GameState, id: number): TapResult {
+  if (s.status !== 'playing' || s.removed[id] || !board.visible(s, id)) return { kind: 'ignored' };
+  const blk = board.firstBlocker(s, id);
+  if (blk) return { kind: 'blocked', blocker: blk.id, dist: blk.dist };
+  return enterStall(board, s, id);
+}
+
+/** Boost "gru": solleva un bus qualsiasi (anche bloccato) e lo porta in uno stallo. Una volta per livello. */
+export function lift(board: Board, s: GameState, id: number): TapResult {
+  if (s.liftUsed || s.status !== 'playing' || s.removed[id] || !board.visible(s, id)) return { kind: 'ignored' };
+  const r = enterStall(board, s, id);
+  if (r.kind === 'moved') s.liftUsed = true;
+  return r;
 }
 
 /** Boost "+1 posto": aggiunge uno stallo (una volta per livello), anche per riprendere una partita persa. */

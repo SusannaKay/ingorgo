@@ -31,6 +31,8 @@ for (let n = 1; n <= N; n++) {
       String(new Set(lvl.buses.map((b) => b.color)).size),
       String(lvl.stalls),
       String(s.maxChain).padStart(2),
+      `${lvl.theta ? 'diag' : 'orto'}:${lvl.shape}`.padEnd(15),
+      `g${lvl.garages.length}`,
       `${Math.round(s.winRate * 100)}%`.padStart(4),
       `${Math.round(s.targetWinRate * 100)}%`.padStart(4),
       ok ? 'ok' : `KO(${replay ? '' : 'replay '}${sol.result})`,
@@ -38,7 +40,7 @@ for (let n = 1; n <= N; n++) {
     ].join('  '),
   );
 }
-console.log('  n  diff   size  bus col K ch  win  tgt  check   gen');
+console.log('  n  diff   size  bus col K ch  forma          gar  win  tgt  check   gen');
 console.log(rows.join('\n'));
 console.log(`\nproblemi: ${problems}/${N} · tempo medio ${(totalMs / N).toFixed(0)}ms · max ${maxMs.toFixed(0)}ms`);
 process.exit(problems ? 1 : 0);

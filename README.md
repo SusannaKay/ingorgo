@@ -53,9 +53,15 @@ Manopole in `paramsForLevel`: dimensione griglia, numero di bus, colori, stalli 
 
 In `src/render/camera.ts`: `yaw` ruota la scena (0 = vista frontale 3/4 come l'originale, valori più alti = più isometrico), `squash` è l'inclinazione della camera, `zk` l'altezza dei bus.
 
+## Meccaniche
+
+- **Forme del parcheggio**: rettangolo, blob, anello con buco, rombo, gemelli, clessidra; dal livello 4 anche ruotate di 45°. La griglia logica è ruotata nel mondo (`theta`, `tx`, `ty` nel livello) e `mask` dice quali celle esistono.
+- **Garage**: muri fissi che sfornano 2-5 bus nascosti uno alla volta nelle celle davanti. Nel motore i bus di un garage condividono le celle e dipendono dal precedente (`prev`). Il generatore piazza i garage per primi, così nessuna strada d'uscita li attraversa e la risolvibilità resta garantita.
+- **Gru**: una volta per livello solleva qualsiasi bus visibile, anche bloccato, e lo porta in uno stallo.
+
 ## Idee per i prossimi passi
 
-- Meccaniche nuove ogni ~10 livelli: bus chiusi a chiave, colore nascosto "?", ambulanza a mosse limitate, timer.
+- Altre meccaniche: bus chiusi a chiave, colore nascosto "?", ambulanza a mosse limitate, timer.
 - Suoni e vibrazione più ricca, monete e boost a pagamento.
 - Coda dei bus in attesa sulla strada (ora possono sovrapporsi se tocchi molto in fretta).
 - Service worker per giocare offline.

@@ -10,7 +10,7 @@
 //    simulato è più vicina all'obiettivo del livello.
 import { Board, initialState, tap } from './engine';
 import { Rng, mulberry32, randInt, pick, shuffle } from './rng';
-import { Bus, CAPACITY, DX, DY, Dir, Level, busCells, pathCells } from './types';
+import { Bus, CAPACITY, Dir, Garage, Level, busCells, pathCells, toWorld } from './types';
 
 export interface GenParams {
   difficulty: number;
@@ -27,6 +27,12 @@ export interface GenParams {
   targetWinRate: number;
   candidates: number;
   playouts: number;
+  /** parcheggio ruotato di 45° */
+  diagonal: boolean;
+  /** forma del parcheggio */
+  shape: string;
+  garages: number;
+  garageCars: number;
 }
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -67,32 +73,147 @@ export function paramsForLevel(n: number): GenParams {
     targetWinRate: Math.max(0.03, lerp(1, 0.12, t) - 0.08 * o),
     candidates: n <= 3 ? 3 : Math.round(lerp(10, 28, t)),
     playouts: 60,
+    ...structureForLevel(n, t, o),
   };
 }
 
-/** Passo 1: piazzamento inverso. Restituisce i bus in ordine di piazzamento. */
-function placeBuses(rng: Rng, p: GenParams): Bus[] {
-  const { w, h } = p;
-  const grid = new Int16Array(w * h).fill(-1);
-  const pathCount = new Int16Array(w * h); // quante strade d'uscita passano da ogni cella
-  const buses: Bus[] = [];
-  let fails = 0;
+const SHAPES = ['rect', 'blob', 'ring', 'diamond', 'twin', 'blob', 'hourglass'];
 
-  while (buses.length < p.targetBuses && fails < 300) {
+/** Forma, orientamento e garage: varia di livello in livello (deterministico). */
+function structureForLevel(n: number, t: number, o: number) {
+  const r = mulberry32(n * 2654435761 + 97);
+  if (n <= 3) return { diagonal: false, shape: 'rect', garages: 0, garageCars: 0 };
+  if (n === 4) return { diagonal: true, shape: 'rect', garages: 0, garageCars: 0 };
+  const diagonal = r() < 0.6;
+  const shape = n < 7 ? (r() < 0.5 ? 'rect' : 'blob') : pick(r, SHAPES);
+  let garages = 0;
+  if (n === 8) garages = 1; // primo garage: livello di presentazione
+  else if (n > 8) garages = (r() < 0.25 + 0.5 * t ? 1 : 0) + (t > 0.6 && r() < 0.4 ? 1 : 0) + (o > 0.3 ? 1 : 0);
+  return { diagonal, shape, garages, garageCars: Math.round(lerp(2, 4, t)) + (r() < 0.3 ? 1 : 0) };
+}
+
+interface Layout {
+  w: number;
+  h: number;
+  gw: number;
+  gh: number;
+  theta: number;
+  tx: number;
+  ty: number;
+  mask: number[];
+  cells: number;
+}
+
+/** Celle della griglia che stanno dentro la forma scelta, nel riquadro w × h del mondo. */
+function buildLayout(rng: Rng, p: GenParams): Layout {
+  // forme ruotate o irregolari perdono celle ai bordi: riquadro un po' più grande
+  const grow = p.diagonal || p.shape !== 'rect' ? 1 : 0;
+  const W = Math.min(8, p.w + grow),
+    H = Math.min(11, p.h + grow);
+  const theta = p.diagonal ? Math.PI / 4 : 0;
+  let gw = W,
+    gh = H,
+    tx = 0,
+    ty = 0;
+  if (p.diagonal) {
+    const N = Math.ceil((W + H) / Math.SQRT2) + 2;
+    gw = gh = N;
+    // il centro della griglia va al centro del riquadro
+    const [cx, cy] = toWorld({ theta, tx: 0, ty: 0 }, N / 2, N / 2);
+    tx = W / 2 - cx;
+    ty = H / 2 - cy;
+  }
+  const circles: [number, number, number][] = [];
+  for (let i = 0; i < 4; i++) circles.push([(rng() - 0.5) * 0.9, (rng() - 0.5) * 0.9, 0.55 + rng() * 0.3]);
+  const inside = (u: number, v: number): boolean => {
+    switch (p.shape) {
+      case 'blob':
+        return circles.some(([a, b, r]) => (u - a) ** 2 + (v - b) ** 2 < r * r) && Math.abs(u) < 1 && Math.abs(v) < 1;
+      case 'ring':
+        return u * u + v * v < 1.15 && u * u + v * v > 0.16;
+      case 'diamond':
+        return Math.abs(u) + Math.abs(v) < 1.25;
+      case 'twin':
+        return (u + 0.4) ** 2 + (v + 0.45) ** 2 < 0.42 || (u - 0.4) ** 2 + (v - 0.45) ** 2 < 0.42 || Math.abs(u + v) < 0.35;
+      case 'hourglass':
+        return Math.abs(u) < 0.32 + 0.68 * Math.abs(v);
+      default:
+        return true;
+    }
+  };
+  const m = p.diagonal ? 0.6 : 0.5;
+  const build = (useShape: boolean) => {
+    const mask = new Array<number>(gw * gh).fill(0);
+    let cells = 0;
+    for (let y = 0; y < gh; y++)
+      for (let x = 0; x < gw; x++) {
+        const [wx, wy] = toWorld({ theta, tx, ty }, x + 0.5, y + 0.5);
+        if (wx < m - 1e-6 || wy < m - 1e-6 || wx > W - m + 1e-6 || wy > H - m + 1e-6) continue;
+        if (useShape && !inside((wx - W / 2) / (W / 2), (wy - H / 2) / (H / 2))) continue;
+        mask[y * gw + x] = 1;
+        cells++;
+      }
+    return { mask, cells };
+  };
+  let { mask, cells } = build(true);
+  if (cells < W * H * 0.45) ({ mask, cells } = build(false)); // forma troppo piccola: torna al riquadro pieno
+  return { w: W, h: H, gw, gh, theta, tx, ty, mask, cells };
+}
+
+/**
+ * Passo 1: piazzamento inverso. Prima i garage (i loro muri non si spostano mai, quindi
+ * nessuna strada d'uscita può attraversarli), poi i bus. Restituisce garage e bus;
+ * i bus nascosti nei garage condividono le celle davanti al garage.
+ */
+function placeBuses(rng: Rng, p: GenParams, L: Layout): { buses: Bus[]; garages: Garage[] } {
+  const { gw, gh, mask } = L;
+  const EMPTY = -1,
+    WALL = -2;
+  const grid = new Int32Array(gw * gh).fill(EMPTY);
+  const pathCount = new Int16Array(gw * gh);
+  const buses: Bus[] = [];
+  const garages: Garage[] = [];
+  const inMaskFree = (cells: [number, number][]) =>
+    cells.every(([cx, cy]) => cx >= 0 && cy >= 0 && cx < gw && cy < gh && mask[cy * gw + cx] === 1 && grid[cy * gw + cx] === EMPTY);
+  const pathClear = (b: Pick<Bus, 'x' | 'y' | 'dir' | 'len'>) => pathCells(b, gw, gh).every(([cx, cy]) => grid[cy * gw + cx] === EMPTY);
+
+  // garage: 2 celle di muro + 2 celle davanti dove compare il bus
+  for (let g = 0; g < p.garages; g++) {
+    for (let k = 0; k < 120; k++) {
+      const dir = randInt(rng, 4) as Dir;
+      const x = randInt(rng, gw),
+        y = randInt(rng, gh);
+      const body = { x, y, dir, len: 2 };
+      const front = { x: x + DXY[dir][0] * 2, y: y + DXY[dir][1] * 2, dir, len: 2 };
+      if (!inMaskFree([...busCells(body), ...busCells(front)]) || !pathClear(front)) continue;
+      const gar: Garage = { id: g, ...body, cars: [] };
+      for (const [cx, cy] of busCells(body)) grid[cy * gw + cx] = WALL;
+      for (let c = 0; c < p.garageCars; c++) {
+        const bus: Bus = { id: buses.length, ...front, color: 0, cap: CAPACITY[2], garage: g, prev: c ? buses.length - 1 : -1 };
+        gar.cars.push(bus.id);
+        buses.push(bus);
+      }
+      for (const [cx, cy] of busCells(front)) grid[cy * gw + cx] = gar.cars[0];
+      for (const [cx, cy] of pathCells(front, gw, gh)) pathCount[cy * gw + cx]++;
+      garages.push(gar);
+      break;
+    }
+  }
+
+  const target = buses.length + Math.round((p.targetBuses * L.cells) / (p.w * p.h));
+  let fails = 0;
+  while (buses.length < target && fails < 400) {
     let best: Bus | null = null;
     let bestScore = -1;
     let firstValid: Bus | null = null;
-    for (let k = 0; k < 14; k++) {
+    for (let k = 0; k < 24; k++) {
       const len = rng() < p.longRatio ? 3 : 2;
       const dir = randInt(rng, 4) as Dir;
-      const x = randInt(rng, w);
-      const y = randInt(rng, h);
-      const cand: Bus = { id: buses.length, x, y, dir, len, color: 0, cap: CAPACITY[len] };
+      const cand: Bus = { id: buses.length, x: randInt(rng, gw), y: randInt(rng, gh), dir, len, color: 0, cap: CAPACITY[len] };
       const cells = busCells(cand);
-      if (!cells.every(([cx, cy]) => cx >= 0 && cy >= 0 && cx < w && cy < h && grid[cy * w + cx] < 0)) continue;
-      // la strada davanti deve essere libera dai bus piazzati prima
-      if (!pathCells(cand, w, h).every(([cx, cy]) => grid[cy * w + cx] < 0)) continue;
-      const score = cells.reduce((s, [cx, cy]) => s + pathCount[cy * w + cx], 0) + rng() * 0.5;
+      // celle libere e dentro la forma, strada davanti libera dai bus piazzati prima
+      if (!inMaskFree(cells) || !pathClear(cand)) continue;
+      const score = cells.reduce((acc, [cx, cy]) => acc + pathCount[cy * gw + cx], 0) + rng() * 0.5;
       if (!firstValid) firstValid = cand;
       if (score > bestScore) {
         bestScore = score;
@@ -104,12 +225,19 @@ function placeBuses(rng: Rng, p: GenParams): Bus[] {
       fails++;
       continue;
     }
-    for (const [cx, cy] of busCells(chosen)) grid[cy * w + cx] = chosen.id;
-    for (const [cx, cy] of pathCells(chosen, w, h)) pathCount[cy * w + cx]++;
+    for (const [cx, cy] of busCells(chosen)) grid[cy * gw + cx] = chosen.id;
+    for (const [cx, cy] of pathCells(chosen, gw, gh)) pathCount[cy * gw + cx]++;
     buses.push(chosen);
   }
-  return buses;
+  return { buses, garages };
 }
+
+const DXY: [number, number][] = [
+  [0, -1],
+  [1, 0],
+  [0, 1],
+  [-1, 0],
+];
 
 /** Catena di blocchi più lunga (profondità del grafo "chi deve uscire prima di chi"). */
 function longestChain(board: Board): number {
@@ -118,7 +246,7 @@ function longestChain(board: Board): number {
   const depth = (i: number): number => {
     if (memo[i] >= 0) return memo[i];
     let d = 1;
-    for (const b of board.blockers[i]) d = Math.max(d, 1 + depth(b));
+    for (const b of board.deps[i]) d = Math.max(d, 1 + depth(b));
     return (memo[i] = d);
   };
   let m = 0;
@@ -133,7 +261,7 @@ function randomExitOrder(rng: Rng, board: Board): number[] {
   const removed = new Array<boolean>(n).fill(false);
   while (out.length < n) {
     const free: number[] = [];
-    for (let i = 0; i < n; i++) if (!removed[i] && board.blockers[i].every((b) => removed[b])) free.push(i);
+    for (let i = 0; i < n; i++) if (!removed[i] && board.deps[i].every((b) => removed[b])) free.push(i);
     const id = pick(rng, free);
     removed[id] = true;
     out.push(id);
@@ -213,7 +341,8 @@ export function replayWins(level: Level, moves: number[]): boolean {
 }
 
 function buildCandidate(rng: Rng, p: GenParams, n: number, seed: number): Level {
-  const placed = placeBuses(rng, p);
+  const L = buildLayout(rng, p);
+  const { buses: placed, garages } = placeBuses(rng, p, L);
   const colors = Math.min(p.colors, placed.length);
   const palette = shuffle(rng, [0, 1, 2, 3, 4, 5, 6, 7]).slice(0, colors);
   const colorBag = shuffle(
@@ -224,8 +353,16 @@ function buildCandidate(rng: Rng, p: GenParams, n: number, seed: number): Level 
   const level: Level = {
     number: n,
     seed,
-    w: p.w,
-    h: p.h,
+    w: L.w,
+    h: L.h,
+    gw: L.gw,
+    gh: L.gh,
+    theta: L.theta,
+    tx: L.tx,
+    ty: L.ty,
+    mask: L.mask,
+    shape: p.shape,
+    garages,
     stalls: p.stalls,
     buses,
     queue: [],
@@ -252,7 +389,7 @@ export function generateLevel(n: number, override?: Partial<GenParams>): Level {
     const board = new Board(lvl);
     lvl.stats.winRate = winRate(board, seed + c, p.playouts);
     // penalizza livelli con pochi bus rispetto all'obiettivo (griglia troppo piena)
-    const gap = Math.abs(lvl.stats.winRate - p.targetWinRate) + Math.max(0, p.targetBuses - lvl.buses.length) * 0.02;
+    const gap = Math.abs(lvl.stats.winRate - p.targetWinRate) + Math.max(0, p.targetBuses * 0.7 - lvl.buses.length) * 0.02;
     if (gap < bestGap) {
       bestGap = gap;
       best = lvl;

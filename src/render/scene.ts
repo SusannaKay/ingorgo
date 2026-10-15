@@ -1,7 +1,7 @@
 // Stato visivo (animazioni a timeline) e disegno su Canvas 2D.
 // La logica di gioco è istantanea: qui ogni evento diventa movimento nel tempo.
 import { Camera } from './camera';
-import { Level, DX, DY } from '../game/types';
+import { Level, busCells, toWorld } from '../game/types';
 import { GameEvent, GameState } from '../game/engine';
 import { mulberry32 } from '../game/rng';
 
@@ -38,6 +38,8 @@ interface Motion {
   total: number;
   easeIn: boolean;
   easeOut: boolean;
+  /** volo della gru: arco in altezza e rotazione verso lo stallo */
+  air?: { a0: number; a1: number };
 }
 
 function buildPath(raw: [number, number][]): PathPt[] {
@@ -109,7 +111,8 @@ function sampleMotion(m: Motion, t: number) {
   const p0 = pts[i],
     p1 = pts[Math.min(i + 1, pts.length - 1)];
   const k = p1.d > p0.d ? (d - p0.d) / (p1.d - p0.d) : 0;
-  return { x: p0.x + (p1.x - p0.x) * k, y: p0.y + (p1.y - p0.y) * k, a: lerpAngle(p0.a, p1.a, k) };
+  const a = m.air ? lerpAngle(m.air.a0, m.air.a1, Math.min(1, u * 1.4)) : lerpAngle(p0.a, p1.a, k);
+  return { x: p0.x + (p1.x - p0.x) * k, y: p0.y + (p1.y - p0.y) * k, a, u };
 }
 
 // ---------- colori ----------
@@ -134,7 +137,9 @@ export function shade(hex: string, amt: number): string {
 }
 
 // ---------- tipi visivi ----------
-type Phase = 'lot' | 'in' | 'stall' | 'out' | 'gone';
+type Phase = 'lot' | 'in' | 'stall' | 'out' | 'gone' | 'hidden';
+
+type LBox = { minX: number; maxX: number; minY: number; maxY: number };
 
 interface VBus {
   id: number;
@@ -157,6 +162,22 @@ interface VBus {
   hintUntil: number;
   dropAt: number;
   hopAt: number;
+  /** bus nei garage: quando esce (Infinity = ancora dentro) */
+  emergeAt: number;
+  next: number;
+  garageX: number;
+  garageY: number;
+  /** ingombro nella griglia, per l'ordine di disegno */
+  lb: LBox;
+}
+
+interface VGarage {
+  id: number;
+  x: number;
+  y: number;
+  a: number;
+  lb: LBox;
+  cars: number[];
 }
 
 interface Pose {
@@ -204,6 +225,7 @@ interface Confetti {
 }
 
 interface Drawable {
+  lb?: LBox;
   minX: number;
   maxX: number;
   minY: number;
@@ -216,6 +238,7 @@ export class Scene {
   cam = new Camera(0.14, 0.68, 0.85);
   ctx!: CanvasRenderingContext2D;
   buses: VBus[] = [];
+  garages: VGarage[] = [];
   flights: Flight[] = [];
   boardStarts: number[] = [];
   particles: Particle[] = [];
@@ -282,9 +305,19 @@ export class Scene {
   // ---------- stato ----------
   rebuild(state: GameState, now: number, intro = false) {
     this.K = state.slots.length;
-    this.buses = this.level.buses.map((b) => {
-      const lotX = b.x + 0.5 + (DX[b.dir] * (b.len - 1)) / 2;
-      const lotY = b.y + 0.5 + (DY[b.dir] * (b.len - 1)) / 2;
+    const L = this.level;
+    const nextOf = new Map<number, number>();
+    for (const b of L.buses) if ((b.prev ?? -1) >= 0) nextOf.set(b.prev!, b.id);
+    this.garages = L.garages.map((g) => {
+      const lb = boxOf(g);
+      const [x, y] = toWorld(L, (lb.minX + lb.maxX) / 2, (lb.minY + lb.maxY) / 2);
+      return { id: g.id, x, y, a: DIR_ANG[g.dir] + L.theta, lb, cars: g.cars };
+    });
+    this.buses = L.buses.map((b) => {
+      const lb = boxOf(b);
+      const [lotX, lotY] = toWorld(L, (lb.minX + lb.maxX) / 2, (lb.minY + lb.maxY) / 2);
+      const g = b.garage !== undefined ? this.garages[b.garage] : null;
+      const prev = b.prev ?? -1;
       return {
         id: b.id,
         color: b.color,
@@ -292,7 +325,7 @@ export class Scene {
         cap: b.cap,
         lotX,
         lotY,
-        lotA: DIR_ANG[b.dir],
+        lotA: DIR_ANG[b.dir] + L.theta,
         slot: -1,
         inM: null,
         outM: null,
@@ -306,6 +339,11 @@ export class Scene {
         hintUntil: 0,
         dropAt: intro ? now + 0.1 + lotY * 0.05 + lotX * 0.025 : -9,
         hopAt: -9,
+        emergeAt: prev < 0 || state.removed[prev] ? -9 : Infinity,
+        next: nextOf.get(b.id) ?? -1,
+        garageX: g ? g.x : lotX,
+        garageY: g ? g.y : lotY,
+        lb,
       };
     });
     state.slots.forEach((sb, i) => {
@@ -339,10 +377,11 @@ export class Scene {
     return vb.inM ? vb.inM.t0 + vb.inM.T : Infinity;
   }
 
-  apply(events: GameEvent[], now: number) {
+  apply(events: GameEvent[], now: number, lifted = false) {
     for (const e of events) {
       const vb = this.buses[e.id];
       if (e.type === 'enter') {
+        if (vb.next >= 0) this.buses[vb.next].emergeAt = now + (lifted ? 0.6 : 0.22);
         let bay = -1;
         for (let i = 0; i < this.K; i++)
           if (this.bayOwner[i] < 0 && (bay < 0 || this.slotFreeAt[i] < this.slotFreeAt[bay])) bay = i;
@@ -353,20 +392,14 @@ export class Scene {
         vb.hopAt = now;
         const bx = this.bayX(bay);
         const cy = this.stallCY(vb.len);
-        const { lotX: x, lotY: y } = vb;
-        const W = this.w,
-          H = this.h;
-        const dir = DIR_ANG.indexOf(vb.lotA);
-        let pts: [number, number][];
-        if (dir === 0) pts = [[x, y], [x, -0.5], [bx, -0.5], [bx, cy]];
-        else if (dir === 1) pts = [[x, y], [W + 0.5, y], [W + 0.5, -0.5], [bx, -0.5], [bx, cy]];
-        else if (dir === 3) pts = [[x, y], [-0.5, y], [-0.5, -0.5], [bx, -0.5], [bx, cy]];
-        else {
-          const side = bx < W / 2 ? -0.5 : W + 0.5;
-          pts = [[x, y], [x, H + 0.5], [side, H + 0.5], [side, -0.5], [bx, -0.5], [bx, cy]];
-        }
         const minDur = Math.max(0, this.slotFreeAt[bay] + 0.05 - now);
-        vb.inM = motion(pts, now + 0.06, minDur, true, true);
+        if (lifted) {
+          // la gru lo solleva e lo porta in volo dritto allo stallo
+          vb.inM = motion([[vb.lotX, vb.lotY], [bx, cy]], now + 0.05, Math.max(minDur, 1.1), true, true);
+          vb.inM.air = { a0: vb.lotA, a1: -Math.PI / 2 };
+        } else {
+          vb.inM = motion(this.exitRoute(vb.lotX, vb.lotY, vb.lotA, bx, cy), now + 0.06, minDur, true, true);
+        }
         this.settleAt = Math.max(this.settleAt, this.arriveAt(vb));
       } else if (e.type === 'board') {
         const backlog = this.boardStarts.filter((t) => t > now).length;
@@ -399,6 +432,40 @@ export class Scene {
         this.settleAt = Math.max(this.settleAt, dep + vb.outM.T);
       }
     }
+  }
+
+  /** Dal posto nel parcheggio, dritto fino alla strada ad anello, poi allo stallo. */
+  private exitRoute(x: number, y: number, a: number, bx: number, cy: number): [number, number][] {
+    const W = this.w,
+      H = this.h;
+    const x0 = -0.5,
+      y0 = -0.5,
+      x1 = W + 0.5,
+      y1 = H + 0.5;
+    const fx = Math.cos(a),
+      fy = Math.sin(a);
+    let t = Infinity;
+    let side = 'top';
+    const test = (tt: number, sd: string) => {
+      if (tt > 1e-6 && tt < t) {
+        t = tt;
+        side = sd;
+      }
+    };
+    if (fx > 1e-6) test((x1 - x) / fx, 'right');
+    if (fx < -1e-6) test((x0 - x) / fx, 'left');
+    if (fy > 1e-6) test((y1 - y) / fy, 'bottom');
+    if (fy < -1e-6) test((y0 - y) / fy, 'top');
+    const P: [number, number] = [x + fx * t, y + fy * t];
+    const pts: [number, number][] = [[x, y], P];
+    if (side === 'left') pts.push([x0, y0]);
+    else if (side === 'right') pts.push([x1, y0]);
+    else if (side === 'bottom') {
+      const sx = bx < W / 2 ? x0 : x1;
+      pts.push([sx, y1], [sx, y0]);
+    }
+    pts.push([bx, y0], [bx, cy]);
+    return pts;
   }
 
   bump(id: number, blocker: number, dist: number, now: number) {
@@ -484,8 +551,12 @@ export class Scene {
       const arr = this.arriveAt(vb);
       if (now < arr) {
         const k = sampleMotion(vb.inM, now);
+        if (vb.inM.air) {
+          const u = Math.max(0, Math.min(1, (now - vb.inM.t0) / vb.inM.T));
+          return { ...base, x: k.x, y: k.y, a: k.a, phase: 'in', z: Math.sin(Math.PI * u) * 2.6 };
+        }
         const hop = now - vb.hopAt < 0.18 ? Math.sin((Math.PI * (now - vb.hopAt)) / 0.18) * 0.12 : 0;
-        return { ...base, ...k, phase: 'in', z: hop };
+        return { ...base, x: k.x, y: k.y, a: k.a, phase: 'in', z: hop };
       }
       // arrivo nello stallo: piccolo rimbalzo
       const tau = now - arr;
@@ -504,6 +575,14 @@ export class Scene {
     let z = 0,
       hk = 1,
       alpha = 1;
+    // bus ancora nel garage, o che ne sta uscendo
+    if (now < vb.emergeAt) return { ...base, x, y, a: vb.lotA, phase: 'hidden', alpha: 0 };
+    const te = now - vb.emergeAt;
+    if (te < 0.32) {
+      const u = te / 0.32;
+      const e = 1 - (1 - u) ** 3;
+      return { ...base, x: vb.garageX + (x - vb.garageX) * e, y: vb.garageY + (y - vb.garageY) * e, a: vb.lotA, phase: 'lot', alpha: Math.min(1, u * 3), pop: 0.85 + 0.15 * e };
+    }
     // entrata a inizio livello: il bus "spunta" con un piccolo salto
     const td = now - vb.dropAt;
     let pop = 1;
@@ -540,7 +619,7 @@ export class Scene {
     const cands: { id: number; depth: number; hull: [number, number][] }[] = [];
     for (const vb of this.buses) {
       const p = this.pose(vb, now);
-      if (p.phase !== 'lot' || now < vb.dropAt + 0.3) continue;
+      if (p.phase !== 'lot' || now < vb.dropAt + 0.3 || now < vb.emergeAt + 0.12) continue;
       const pts: [number, number][] = [];
       for (const [u, v] of CORNERS) {
         const [gx, gy] = this.local(p, vb.len, u, v);
@@ -554,7 +633,7 @@ export class Scene {
     let best: number | null = null;
     let bd = 0.8;
     for (const vb of this.buses) {
-      if (this.pose(vb, now).phase !== 'lot') continue;
+      if (this.pose(vb, now).phase !== 'lot' || now < vb.emergeAt + 0.12) continue;
       const fx = Math.cos(vb.lotA),
         fy = Math.sin(vb.lotA);
       const half = (vb.len - 1) / 2;
@@ -599,9 +678,12 @@ export class Scene {
     this.drawBays(now);
 
     const items: Drawable[] = [];
+    for (const g of this.garages) {
+      items.push({ lb: g.lb, ...this.worldBox(g.x, g.y, g.a, 2), depth: this.cam.depth(g.x, g.y), draw: () => this.drawGarage(g, now) });
+    }
     for (const vb of this.buses) {
       const p = this.pose(vb, now);
-      if (p.phase === 'gone') continue;
+      if (p.phase === 'gone' || p.phase === 'hidden') continue;
       const xs: number[] = [],
         ys: number[] = [];
       for (const [u, v] of CORNERS) {
@@ -610,6 +692,7 @@ export class Scene {
         ys.push(gy);
       }
       items.push({
+        lb: p.phase === 'lot' ? vb.lb : undefined,
         minX: Math.min(...xs),
         maxX: Math.max(...xs),
         minY: Math.min(...ys),
@@ -640,7 +723,21 @@ export class Scene {
       });
     }
     const sn = Math.sin(this.cam.yaw);
+    // direzione "verso chi guarda" nelle coordinate della griglia
+    const th = this.level.theta;
+    const vx = Math.cos(th) * sn + Math.sin(th) * Math.cos(this.cam.yaw);
+    const vy = -Math.sin(th) * sn + Math.cos(th) * Math.cos(this.cam.yaw);
     items.sort((A, B) => {
+      if (A.lb && B.lb) {
+        const a = A.lb,
+          b = B.lb;
+        const sx = a.maxX <= b.minX + 1e-3 ? 1 : b.maxX <= a.minX + 1e-3 ? -1 : 0;
+        const sy = a.maxY <= b.minY + 1e-3 ? 1 : b.maxY <= a.minY + 1e-3 ? -1 : 0;
+        const sc = sx * vx + sy * vy;
+        if (Math.abs(sc) > 1e-3) return sc > 0 ? -1 : 1;
+        return A.depth - B.depth;
+      }
+      if (this.level.theta && (A.lb || B.lb)) return A.depth - B.depth;
       if (A.maxY <= B.minY + 1e-3) return -1;
       if (B.maxY <= A.minY + 1e-3) return 1;
       if (A.maxX <= B.minX + 1e-3) return sn >= 0 ? -1 : 1;
@@ -665,6 +762,83 @@ export class Scene {
     this.drawParticles(now);
     ctx.restore();
     this.drawConfetti(now, dt);
+  }
+
+  private worldBox(x: number, y: number, a: number, len: number) {
+    const xs: number[] = [],
+      ys: number[] = [];
+    for (const [u, v] of CORNERS) {
+      const [gx, gy] = this.local({ x, y, a }, len, u, v);
+      xs.push(gx);
+      ys.push(gy);
+    }
+    return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+  }
+
+  /** Garage: casetta con porta sul davanti e numero dei bus ancora dentro. */
+  private drawGarage(g: VGarage, now: number) {
+    const ctx = this.ctx;
+    const c = this.cam;
+    const base = '#7d74d9';
+    const lw = Math.max(1.2, c.s * 0.045);
+    const p = { x: g.x, y: g.y, a: g.a, pop: 1.02 };
+    const L = (u: number, v: number) => this.local(p, 2, u, v);
+    const corners = [L(1, 1), L(1, -1), L(-1, -1), L(-1, 1)];
+    const H = 0.95;
+    this.poly(
+      corners.map(([x, y]) => c.p(x + 0.12, y + 0.16, 0.06)),
+      'rgba(29,35,64,0.25)',
+    );
+    const fx = Math.cos(g.a),
+      fy = Math.sin(g.a);
+    const faces: [[number, number], [number, number], number, number, boolean][] = [
+      [corners[1], corners[0], fx, fy, true],
+      [corners[0], corners[3], -fy, fx, false],
+      [corners[3], corners[2], -fx, -fy, false],
+      [corners[2], corners[1], fy, -fx, false],
+    ];
+    const at = (A: [number, number], B: [number, number], t: number, z: number) => c.p(A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t, z);
+    for (const [A, B, nx, ny, front] of faces) {
+      if (!c.faceVisible(nx, ny)) continue;
+      const facing = nx * Math.sin(c.yaw) + ny * Math.cos(c.yaw);
+      this.poly([at(A, B, 0, 0.08), at(A, B, 1, 0.08), at(A, B, 1, H), at(A, B, 0, H)], shade(base, 0.2 - 0.12 * facing), OUTLINE, lw);
+      // strisce ondulate della lamiera
+      for (let k = 1; k < 6; k++) {
+        const z = 0.08 + (H - 0.08) * (k / 6);
+        const a1 = at(A, B, 0.04, z),
+          b1 = at(A, B, 0.96, z);
+        ctx.strokeStyle = 'rgba(29,35,64,0.18)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(a1[0], a1[1]);
+        ctx.lineTo(b1[0], b1[1]);
+        ctx.stroke();
+      }
+      if (front) this.poly([at(A, B, 0.12, 0.08), at(A, B, 0.88, 0.08), at(A, B, 0.88, 0.74), at(A, B, 0.12, 0.74)], '#1a1f3a', OUTLINE, lw * 0.8);
+    }
+    const roof = corners.map(([x, y]) => c.p(x, y, H));
+    this.poly(roof, shade(base, -0.15), OUTLINE, lw);
+    // numero di bus ancora dentro
+    const inside = g.cars.filter((id) => this.buses[id].emergeAt > now).length;
+    const [rx, ry] = c.p(g.x, g.y, H);
+    const r = c.s * 0.36;
+    ctx.beginPath();
+    ctx.ellipse(rx, ry, r, r * 0.8, 0, 0, Math.PI * 2);
+    ctx.fillStyle = inside ? '#ffd23f' : '#c9cede';
+    ctx.fill();
+    ctx.lineWidth = lw;
+    ctx.strokeStyle = OUTLINE;
+    ctx.stroke();
+    ctx.fillStyle = OUTLINE;
+    ctx.font = `${Math.round(r * 1.25)}px 'Lilita One', 'Arial Rounded MT Bold', system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(inside), rx, ry + r * 0.08);
+    // freccia della direzione di uscita sul tetto
+    const tip = c.p(...L(1.0, 0), H),
+      bl = c.p(...L(0.62, 0.42), H),
+      br = c.p(...L(0.62, -0.42), H);
+    this.poly([tip, bl, br], '#ffffff', OUTLINE, lw * 0.8);
   }
 
   // ---------- sfondo statico (renderizzato una volta) ----------
@@ -770,26 +944,9 @@ export class Scene {
     this.dashes(-0.5, -0.5, -0.5, H + 0.5);
     this.dashes(W + 0.5, -0.5, W + 0.5, H + 0.5);
 
-    // parcheggio
-    this.slab(0, 0, W, H, 0.09, C.lot);
-    ctx.save();
-    ctx.strokeStyle = 'rgba(255,255,255,0.32)';
-    ctx.lineWidth = Math.max(1, c.s * 0.035);
-    ctx.beginPath();
-    for (let x = 1; x < W; x++) {
-      const a = c.p(x, 0.12, 0.09),
-        b = c.p(x, H - 0.12, 0.09);
-      ctx.moveTo(a[0], a[1]);
-      ctx.lineTo(b[0], b[1]);
-    }
-    for (let y = 1; y < H; y++) {
-      const a = c.p(0.12, y, 0.09),
-        b = c.p(W - 0.12, y, 0.09);
-      ctx.moveTo(a[0], a[1]);
-      ctx.lineTo(b[0], b[1]);
-    }
-    ctx.stroke();
-    ctx.restore();
+    // piazzale e piastrelle del parcheggio (forma libera, anche ruotata)
+    this.rect(0, 0, W, H, '#cfd4e6', 0.05);
+    this.drawTiles();
 
 
     // cespugli ai bordi
@@ -806,6 +963,66 @@ export class Scene {
       [W * 0.7, H + 1.75, 0.5],
     ];
     for (const [x, y, r] of spots) this.bush(x, y, r, rng);
+  }
+
+  private drawTiles() {
+    const L = this.level;
+    const c = this.cam;
+    const lw = Math.max(1, c.s * 0.035);
+    const hgt = 0.12;
+    const tiles: [number, number][][] = [];
+    for (let y = 0; y < L.gh; y++)
+      for (let x = 0; x < L.gw; x++)
+        if (L.mask[y * L.gw + x])
+          tiles.push([
+            toWorld(L, x, y),
+            toWorld(L, x + 1, y),
+            toWorld(L, x + 1, y + 1),
+            toWorld(L, x, y + 1),
+          ]);
+    // prima i fianchi visibili di tutte le piastrelle, poi i piani: le vicine coprono i fianchi interni
+    for (const t of tiles) {
+      for (let i = 0; i < 4; i++) {
+        const A = t[i],
+          B = t[(i + 1) % 4];
+        const nx = B[1] - A[1],
+          ny = -(B[0] - A[0]);
+        if (!c.faceVisible(nx, ny)) continue;
+        this.poly([c.p(A[0], A[1], 0.05), c.p(B[0], B[1], 0.05), c.p(B[0], B[1], hgt), c.p(A[0], A[1], hgt)], shade(C.lot, 0.3), OUTLINE, lw);
+      }
+    }
+    tiles.forEach((t, i) => {
+      const [x0, y0] = t[0];
+      const checker = (Math.round(x0 * 7 + y0 * 3) + i) % 2 === 0;
+      this.poly(
+        t.map(([x, y]) => c.p(x, y, hgt)),
+        checker ? C.lot : shade(C.lot, 0.04),
+      );
+    });
+    // contorno della forma: bordo scuro solo sui lati esterni
+    const ctx = this.ctx;
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = lw * 1.3;
+    ctx.beginPath();
+    for (let y = 0; y < L.gh; y++)
+      for (let x = 0; x < L.gw; x++) {
+        if (!L.mask[y * L.gw + x]) continue;
+        const nb: [number, number, [number, number], [number, number]][] = [
+          [x, y - 1, [x, y], [x + 1, y]],
+          [x + 1, y, [x + 1, y], [x + 1, y + 1]],
+          [x, y + 1, [x + 1, y + 1], [x, y + 1]],
+          [x - 1, y, [x, y + 1], [x, y]],
+        ];
+        for (const [nx, ny, A, B] of nb) {
+          const outside = nx < 0 || ny < 0 || nx >= L.gw || ny >= L.gh || !L.mask[ny * L.gw + nx];
+          if (!outside) continue;
+          const a = c.p(...toWorld(L, A[0], A[1]), hgt),
+            b = c.p(...toWorld(L, B[0], B[1]), hgt);
+          ctx.moveTo(a[0], a[1]);
+          ctx.lineTo(b[0], b[1]);
+        }
+      }
+    ctx.stroke();
   }
 
   private bush(x: number, y: number, r: number, rng: () => number) {
@@ -1233,4 +1450,12 @@ function pointInPoly(x: number, y: number, poly: [number, number][]): boolean {
     if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
   }
   return inside;
+}
+
+function boxOf(b: { x: number; y: number; dir: number; len: number }): LBox {
+  const cells = busCells(b as any);
+  const xs = cells.map((q) => q[0]),
+    ys = cells.map((q) => q[1]);
+  const pad = 0.08;
+  return { minX: Math.min(...xs) + pad, maxX: Math.max(...xs) + 1 - pad, minY: Math.min(...ys) + pad, maxY: Math.max(...ys) + 1 - pad };
 }

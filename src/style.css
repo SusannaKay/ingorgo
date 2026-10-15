@@ -114,14 +114,14 @@ input:focus-visible {
   left: 0;
   right: 0;
   bottom: calc(var(--safe-bottom) + 12px);
-  padding: 0 calc(var(--safe-right) + 14px) 0 calc(var(--safe-left) + 14px);
+  padding: 0 calc(var(--safe-right) + 10px) 0 calc(var(--safe-left) + 10px);
   display: flex;
   justify-content: center;
-  gap: 12px;
+  gap: 8px;
 }
 #bar button {
   flex: 1;
-  max-width: 84px;
+  max-width: 76px;
   border: 0;
   background: none;
   padding: 0;
@@ -133,8 +133,8 @@ input:focus-visible {
   touch-action: manipulation;
 }
 #bar .ic {
-  width: 56px;
-  height: 52px;
+  width: 54px;
+  height: 50px;
   display: grid;
   place-items: center;
   border-radius: 18px;
@@ -154,6 +154,16 @@ input:focus-visible {
 }
 #btnHint .ic { background: var(--sun); }
 #btnStall .ic { background: #8fd3ff; }
+#btnLift .ic { background: #ffb3d9; }
+#btnLift.armed .ic {
+  background: #ff70c4;
+  transform: translateY(-3px);
+  box-shadow: 0 7px 0 var(--ink);
+  animation: armed 0.9s ease-in-out infinite;
+}
+@keyframes armed {
+  50% { transform: translateY(-6px); }
+}
 #bar button:active .ic {
   transform: translateY(4px);
   box-shadow: 0 0 0 var(--ink);
@@ -305,6 +315,10 @@ input:focus-visible {
 
 /* schermi stretti */
 .chip-label .short { display: none; }
+@media (max-width: 370px) {
+  #bar .ic { width: 50px; height: 46px; }
+  #bar button { font-size: 11.5px; }
+}
 @media (max-width: 390px) {
   #hud { gap: 6px; }
   .chip { padding: 0 10px; height: 40px; }

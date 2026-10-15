@@ -1,5 +1,5 @@
 import './style.css';
-import { Board, GameState, addStall, cloneState, initialState, tap } from './game/engine';
+import { Board, GameState, addStall, cloneState, initialState, lift, tap } from './game/engine';
 import { generateLevel } from './game/generator';
 import { solve } from './game/solver';
 import { Level, difficultyLabel } from './game/types';
@@ -26,7 +26,8 @@ let history: GameState[] = [];
 let scene: Scene;
 let overlayShown = false;
 let endHandled = false;
-let helped = false; // ha usato annulla, aiuto o +1 posto
+let helped = false; // ha usato annulla, aiuto, gru o +1 posto
+let liftArmed = false;
 
 const now = () => performance.now() / 1000;
 
@@ -69,9 +70,12 @@ function loadLevel(n: number) {
   $('overlay').hidden = true;
   updateHud();
   pregenerate(n + 1);
+  setLiftArmed(false);
   if (n === 1) toast('Tocca un bus: esce seguendo la freccia', 3500);
   else if (n === 2) toast('I passeggeri salgono solo sul bus del loro colore', 3500);
   else if (n === 3) toast('Se tutti i posti si riempiono senza il colore giusto, perdi', 3500);
+  else if (n === 4) toast('Il parcheggio ora è in diagonale: segui bene le frecce', 3500);
+  else if (n === 8) toast('Garage: il numero dice quanti bus ci sono dentro, escono uno alla volta', 4500);
 }
 
 function layout() {
@@ -102,6 +106,7 @@ function updateHud() {
   badge.className = 'chip tag ' + TAG_CLASS[label];
   $<HTMLButtonElement>('btnUndo').disabled = history.length === 0;
   $<HTMLButtonElement>('btnStall').disabled = state.extraUsed;
+  $<HTMLButtonElement>('btnLift').disabled = state.liftUsed;
   if (DEBUG) {
     const d = $('debug');
     d.hidden = false;
@@ -155,6 +160,18 @@ function onTap(sx: number, sy: number) {
   const id = scene.hit(sx, sy, t);
   if (id === null) return;
   const before = cloneState(state);
+  if (liftArmed) {
+    const r = lift(board, state, id);
+    setLiftArmed(false);
+    if (r.kind === 'moved') {
+      helped = true;
+      history.push(before);
+      scene.apply(r.events, t, true);
+      navigator.vibrate?.([10, 30, 10]);
+    }
+    updateHud();
+    return;
+  }
   const res = tap(board, state, id);
   if (res.kind === 'blocked') {
     scene.bump(id, res.blocker, res.dist, t);
@@ -165,6 +182,21 @@ function onTap(sx: number, sy: number) {
     navigator.vibrate?.(8);
   }
   updateHud();
+}
+
+function setLiftArmed(on: boolean) {
+  liftArmed = on;
+  $('btnLift').classList.toggle('armed', on);
+}
+
+function armLift() {
+  if (state.liftUsed || state.status !== 'playing') return;
+  if (liftArmed) {
+    setLiftArmed(false);
+    return;
+  }
+  setLiftArmed(true);
+  toast('Tocca il bus da sollevare, anche se è bloccato', 2600);
 }
 
 function resetEnd() {
@@ -251,6 +283,7 @@ $('btnUndo').onclick = undo;
 $('btnRestart').onclick = restart;
 $('btnStall').onclick = extraStall;
 $('btnHint').onclick = hint;
+$('btnLift').onclick = armLift;
 
 // selettore del livello
 $('levelPill').onclick = () => {

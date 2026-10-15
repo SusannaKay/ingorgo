@@ -10,13 +10,27 @@ export const CAPACITY: Record<number, number> = { 2: 4, 3: 6 };
 
 export interface Bus {
   id: number;
-  /** cella posteriore */
+  /** cella posteriore (coordinate della griglia) */
   x: number;
   y: number;
   dir: Dir;
   len: number;
   color: number;
   cap: number;
+  /** indice del garage da cui esce (solo per i bus nascosti nei garage) */
+  garage?: number;
+  /** bus che deve uscire dal garage prima di questo (-1 se è il primo) */
+  prev?: number;
+}
+
+/** Garage: occupa `len` celle e sforna i suoi bus uno alla volta nelle celle davanti. */
+export interface Garage {
+  id: number;
+  x: number;
+  y: number;
+  dir: Dir;
+  len: number;
+  cars: number[];
 }
 
 export interface LevelStats {
@@ -30,8 +44,19 @@ export interface LevelStats {
 export interface Level {
   number: number;
   seed: number;
+  /** dimensioni del riquadro del parcheggio nel mondo */
   w: number;
   h: number;
+  /** griglia logica (ruotata di `theta` e traslata di tx, ty nel mondo) */
+  gw: number;
+  gh: number;
+  theta: number;
+  tx: number;
+  ty: number;
+  /** 1 = cella del parcheggio, 0 = fuori forma */
+  mask: number[];
+  shape: string;
+  garages: Garage[];
   stalls: number;
   buses: Bus[];
   /** colori dei passeggeri, in ordine di coda */
@@ -41,14 +66,21 @@ export interface Level {
   stats: LevelStats;
 }
 
-export function busCells(b: Bus): [number, number][] {
+/** griglia -> mondo */
+export function toWorld(l: Pick<Level, 'theta' | 'tx' | 'ty'>, x: number, y: number): [number, number] {
+  const c = Math.cos(l.theta),
+    s = Math.sin(l.theta);
+  return [l.tx + c * x - s * y, l.ty + s * x + c * y];
+}
+
+export function busCells(b: Pick<Bus, 'x' | 'y' | 'dir' | 'len'>): [number, number][] {
   const out: [number, number][] = [];
   for (let i = 0; i < b.len; i++) out.push([b.x + DX[b.dir] * i, b.y + DY[b.dir] * i]);
   return out;
 }
 
 /** Celle davanti al muso del bus, fino al bordo del parcheggio, in ordine. */
-export function pathCells(b: Bus, w: number, h: number): [number, number][] {
+export function pathCells(b: Pick<Bus, 'x' | 'y' | 'dir' | 'len'>, w: number, h: number): [number, number][] {
   const out: [number, number][] = [];
   let x = b.x + DX[b.dir] * b.len;
   let y = b.y + DY[b.dir] * b.len;
