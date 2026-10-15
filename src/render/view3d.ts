@@ -8,7 +8,10 @@ import { mulberry32 } from '../game/rng';
 import { BUS_W, Pose, Timeline, VBus, VGarage } from './timeline';
 import { Theme } from './themes';
 
-export const PALETTE = ['#ff4d4d', '#3a86ff', '#ffd23f', '#3ecf6a', '#9b5de5', '#ff9f1c', '#ff70c4', '#17c3b2'];
+// 8 colori scelti per stare lontani tra loro anche sotto luce forte:
+// rosso, blu, giallo, verde, viola, arancio, magenta, azzurro
+export const PALETTE = ['#e3141f', '#1546e0', '#ffcc00', '#13a538', '#7a22d0', '#ff7000', '#f02db4', '#14c4ea'];
+const PERSON = 1.85; // scala degli omini
 const INK = '#1d2340';
 const PITCH = (51 * Math.PI) / 180;
 
@@ -428,6 +431,10 @@ export class View3D {
         [W + 1.6, H * 0.7],
         [W / 2, -4.0],
       ];
+      // luce sulla fila di passeggeri
+      const ql = new THREE.PointLight('#fff1d6', 16, 16, 1.2);
+      ql.position.copy(V(W / 2, -6.3, 3.2));
+      this.world.add(ql);
       for (const [x, y] of lights) {
         const pl = new THREE.PointLight('#ffd27a', 9, 9, 1.6);
         pl.position.copy(V(x, y, 2.2));
@@ -463,7 +470,7 @@ export class View3D {
     const glass = new THREE.Mesh(geo(`glass${len}`, () => new RoundedBoxGeometry(Lb - 0.2, 0.21, Wb + 0.016, 2, 0.06)), glassMat);
     glass.position.y = 0.53;
     inner.add(glass);
-    const roofMat = mat(`roof${vb.color}`, () => std(lighten(color, 0.32), 0.4));
+    const roofMat = mat(`roof${vb.color}`, () => std(lighten(color, 0.08), 0.45));
     const roof = new THREE.Mesh(geo(`roof${len}`, () => new RoundedBoxGeometry(Lb - 0.12, 0.1, Wb - 0.1, 2, 0.045)), roofMat);
     roof.position.y = 0.69;
     roof.castShadow = true;
@@ -601,7 +608,7 @@ export class View3D {
       im.frustumCulled = false;
       this.world.add(im);
     }
-    this.ring = new THREE.Mesh(new THREE.RingGeometry(0.17, 0.23, 24), new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.9 }));
+    this.ring = new THREE.Mesh(new THREE.RingGeometry(0.17 * PERSON, 0.24 * PERSON, 28), new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.9 }));
     this.ring.rotation.x = -Math.PI / 2;
     this.world.add(this.ring);
     const pm = new THREE.MeshBasicMaterial({ color: '#ffffff' });
@@ -613,9 +620,10 @@ export class View3D {
   }
 
   private personColors = PALETTE.map((c) => new THREE.Color(c));
-  private headColors = PALETTE.map((c) => lighten(c, 0.45));
+  private headColors = PALETTE.map((c) => lighten(c, 0.18));
 
   private putPerson(i: number, x: number, y: number, z: number, color: number, s: number) {
+    s *= PERSON;
     this.tmpS.set(s, s, s);
     this.tmpQ.identity();
     this.tmpM.compose(this.tmpP.copy(V(x, y, 0.14 + z + 0.2 * s)), this.tmpQ, this.tmpS);
@@ -764,6 +772,10 @@ export class View3D {
     } else if (now < vb.hintUntil && p.phase === 'lot') {
       em.set('#ffffff');
       o.bodyMat.emissiveIntensity = 0.25 + 0.25 * Math.sin(now * 10);
+    } else if (this.theme.night) {
+      // di notte i bus si illuminano un po' del loro colore, così restano riconoscibili
+      em.set(PALETTE[vb.color]);
+      o.bodyMat.emissiveIntensity = 0.5;
     } else o.bodyMat.emissiveIntensity = 0;
     if (p.phase === 'out' && Math.random() < 0.5) {
       const back = (vb.len - 0.16) / 2 + 0.1;

@@ -214,8 +214,8 @@ export class Timeline {
     return -1.15 - len / 2;
   }
   readonly laneY = -4.75;
-  readonly rowsY = [-6.0, -6.78];
-  readonly spacing = 0.5;
+  readonly rowsY = [-5.72, -6.86];
+  readonly spacing = 0.86;
   perRow() {
     return Math.floor((this.w + 1.5) / this.spacing) + 1;
   }
