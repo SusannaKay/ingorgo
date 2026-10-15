@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-    <meta name="theme-color" content="#6fc275" />
+    <meta name="theme-color" content="#a5dc78" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -11,33 +11,64 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Nunito:wght@700;800;900&display=swap" rel="stylesheet" />
     <title>Ingorgo!</title>
   </head>
   <body>
     <canvas id="game"></canvas>
 
     <header id="hud">
-      <div class="pill" id="levelPill">Livello <b id="levelNum">1</b></div>
-      <div class="pill badge" id="diffBadge">Facile</div>
-      <div class="pill" id="queuePill"><span class="people"></span><b id="queueLeft">0</b></div>
+      <button class="chip level" id="levelPill" aria-label="Cambia livello">
+        <span class="chip-label"><span class="long">Livello</span><span class="short">Liv.</span></span><span class="num" id="levelNum">1</span>
+      </button>
+      <div class="chip tag" id="diffBadge">Facile</div>
+      <div class="chip people-chip" aria-label="Passeggeri in coda">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="6.5" r="4" /><path d="M5 22v-5.5A5.5 5.5 0 0 1 10.5 11h3A5.5 5.5 0 0 1 19 16.5V22z" /></svg>
+        <span class="num" id="queueLeft">0</span>
+      </div>
     </header>
 
     <nav id="bar">
-      <button id="btnUndo" aria-label="Annulla"><span class="ic">↶</span><span>Annulla</span></button>
-      <button id="btnHint" aria-label="Aiuto"><span class="ic">💡</span><span>Aiuto</span></button>
-      <button id="btnStall" aria-label="Un posto in più"><span class="ic">＋</span><span>+1 posto</span></button>
-      <button id="btnRestart" aria-label="Ricomincia"><span class="ic">⟳</span><span>Rifai</span></button>
+      <button id="btnUndo" aria-label="Annulla l'ultima mossa">
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M9 5 3.5 10.5 9 16" /><path d="M4 10.5h10a6 6 0 0 1 0 12h-3" /></svg></span>
+        <span>Annulla</span>
+      </button>
+      <button id="btnHint" aria-label="Suggerisci una mossa">
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M9 18h6M10 21.5h4" /><path d="M12 2.5a6.5 6.5 0 0 0-3.8 11.8c.5.4.8 1 .8 1.7h6c0-.7.3-1.3.8-1.7A6.5 6.5 0 0 0 12 2.5z" /></svg></span>
+        <span>Aiuto</span>
+      </button>
+      <button id="btnStall" aria-label="Aggiungi un posto">
+        <span class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M12 8v8M8 12h8" /></svg></span>
+        <span>+1 posto</span>
+      </button>
+      <button id="btnRestart" aria-label="Ricomincia il livello">
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9" /><path d="M20 3.5V9h-5.5" /></svg></span>
+        <span>Rifai</span>
+      </button>
     </nav>
 
-    <div id="toast"></div>
+    <div id="toast" role="status"></div>
 
     <div id="overlay" hidden>
       <div class="card">
-        <div class="emoji" id="ovEmoji">🎉</div>
+        <div class="badge-art" id="ovArt"></div>
         <h1 id="ovTitle">Livello completato!</h1>
         <p id="ovText"></p>
         <div class="actions" id="ovActions"></div>
       </div>
+    </div>
+
+    <div id="picker" hidden>
+      <form class="card" id="pickerForm">
+        <h1>Vai al livello</h1>
+        <input id="pickerInput" type="number" inputmode="numeric" min="1" max="9999" />
+        <div class="actions">
+          <button type="submit">Gioca</button>
+          <button type="button" class="secondary" id="pickerCancel">Chiudi</button>
+        </div>
+      </form>
     </div>
 
     <pre id="debug" hidden></pre>

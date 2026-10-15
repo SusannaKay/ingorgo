@@ -33,32 +33,40 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 
 // Dente di sega su blocchi di 10 livelli: salita, livello "respiro", boss al decimo.
-const SAW = [0, 0.15, 0.3, 0.1, 0.4, 0.55, 0.2, 0.65, 0.78, 1];
+const SAW = [0, 0.2, 0.4, 0.1, 0.5, 0.65, 0.25, 0.75, 0.85, 1];
 
+/**
+ * Difficoltà 0..1.3: sale in fretta (sfida vera già verso il livello 30) e oltre il 100
+ * entra in "overdrive" (>1), dove gli stalli scendono a 3 e i colori aumentano.
+ */
 export function difficultyForLevel(n: number): number {
-  const intro = Math.min(1, (n - 1) / 15); // i primi livelli non hanno picchi
-  const ramp = 1 - Math.exp(-(n - 1) / 70);
-  return clamp01(0.03 + 0.62 * ramp + 0.35 * SAW[(n - 1) % 10] * intro);
+  const intro = Math.min(1, (n - 1) / 8); // i primissimi livelli non hanno picchi
+  const ramp = 1 - Math.exp(-(n - 1) / 22);
+  const overdrive = 0.3 * Math.min(1, Math.max(0, n - 100) / 300);
+  const d = 0.06 + 0.64 * ramp + 0.3 * SAW[(n - 1) % 10] * intro + overdrive;
+  return Math.max(0, Math.min(1.3, d));
 }
 
 export function paramsForLevel(n: number): GenParams {
   const d = difficultyForLevel(n);
-  const stalls = d > 0.75 ? 4 : 5;
+  const t = clamp01(d); // parte "normale" della curva
+  const o = clamp01((d - 1) / 0.3); // parte overdrive
+  const stalls = d > 1.15 ? 3 : d > 0.55 ? 4 : 5;
   return {
     difficulty: d,
-    w: Math.round(lerp(4, 7, Math.sqrt(d))),
-    h: Math.round(lerp(5, 10, Math.sqrt(d))),
-    targetBuses: Math.round(lerp(5, 28, Math.sqrt(d))),
-    longRatio: lerp(0.15, 0.5, d),
-    colors: Math.round(lerp(2, 6, d)),
+    w: Math.round(lerp(4, 7, Math.sqrt(t))),
+    h: Math.round(lerp(5, 10, Math.sqrt(t)) + o),
+    targetBuses: Math.round(lerp(5, 28, Math.sqrt(t)) + 4 * o),
+    longRatio: lerp(0.15, 0.55, t),
+    colors: Math.round(lerp(2, 6, t) + o),
     stalls,
-    maxOcc: Math.max(1, Math.min(stalls, Math.round(lerp(2, stalls + 0.4, d)))),
-    pRelease: lerp(0.25, 0.9, d),
-    lateBias: lerp(0, 0.8, d),
-    blockBias: lerp(0.3, 0.95, d),
-    targetWinRate: lerp(0.97, 0.15, d),
-    candidates: n <= 3 ? 3 : 18,
-    playouts: 80,
+    maxOcc: Math.max(1, Math.min(stalls, Math.round(lerp(2, stalls + 0.6, t)))),
+    pRelease: lerp(0.3, 0.95, t),
+    lateBias: lerp(0, 0.9, t),
+    blockBias: lerp(0.35, 1, t),
+    targetWinRate: Math.max(0.03, lerp(1, 0.12, t) - 0.08 * o),
+    candidates: n <= 3 ? 3 : Math.round(lerp(10, 28, t)),
+    playouts: 60,
   };
 }
 
@@ -158,23 +166,30 @@ function buildQueue(rng: Rng, order: Bus[], p: GenParams): number[] {
   return q;
 }
 
-/** Giocatore simulato "ragionevole ma distratto": misura la difficoltà percepita. */
+/**
+ * Giocatore simulato "esperto ma umano": non fa mai una mossa che perde subito,
+ * preferisce il colore in testa alla coda e quelli richiesti a breve, ma non
+ * calcola in profondità e ogni tanto sceglie a istinto. La sua % di vittorie
+ * misura la difficoltà percepita.
+ */
 export function playout(board: Board, rng: Rng): boolean {
   const { level } = board;
   const s = initialState(level);
   while (s.status === 'playing') {
     const free = board.freeBuses(s);
     if (!free.length) return false;
-    const front = level.queue[s.qi];
-    const r = rng();
-    const match = free.filter((id) => level.buses[id].color === front);
-    let id: number;
-    if (match.length && r < 0.75) id = pick(rng, match);
-    else {
-      const soon = new Set(level.queue.slice(s.qi, s.qi + 6));
-      const near = free.filter((i) => soon.has(level.buses[i].color));
-      id = near.length && r < 0.9 ? pick(rng, near) : pick(rng, free);
-    }
+    const look = level.queue.slice(s.qi, s.qi + 10);
+    const freeSlots = s.slots.filter((x) => x === null).length;
+    const scored = free.map((id) => {
+      const c = level.buses[id].color;
+      const i = look.indexOf(c);
+      let score = i < 0 ? 12 : i; // prima arriva il colore, meglio è
+      // con un solo stallo libero, un colore sbagliato fa perdere subito
+      if (freeSlots === 1 && c !== look[0]) score += 100;
+      return { id, score: score + rng() * 3 };
+    });
+    scored.sort((a, b) => a.score - b.score);
+    const id = rng() < 0.85 ? scored[0].id : scored[Math.min(scored.length - 1, 1 + Math.floor(rng() * 2))].id;
     tap(board, s, id);
   }
   return s.status === 'won';

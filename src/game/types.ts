@@ -64,5 +64,6 @@ export function difficultyLabel(d: number): string {
   if (d < 0.3) return 'Facile';
   if (d < 0.55) return 'Normale';
   if (d < 0.8) return 'Difficile';
-  return 'Super difficile';
+  if (d <= 1.02) return 'Super difficile';
+  return 'Estremo';
 }
