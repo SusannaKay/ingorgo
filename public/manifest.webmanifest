@@ -1,0 +1,10 @@
+{
+  "name": "Ingorgo! Bus Puzzle",
+  "short_name": "Ingorgo!",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#6fc275",
+  "theme_color": "#6fc275",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

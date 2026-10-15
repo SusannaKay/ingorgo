@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#6fc275" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Ingorgo!" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon.svg" />
+    <title>Ingorgo!</title>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+
+    <header id="hud">
+      <div class="pill" id="levelPill">Livello <b id="levelNum">1</b></div>
+      <div class="pill badge" id="diffBadge">Facile</div>
+      <div class="pill" id="queuePill"><span class="people"></span><b id="queueLeft">0</b></div>
+    </header>
+
+    <nav id="bar">
+      <button id="btnUndo" aria-label="Annulla"><span class="ic">↶</span><span>Annulla</span></button>
+      <button id="btnHint" aria-label="Aiuto"><span class="ic">💡</span><span>Aiuto</span></button>
+      <button id="btnStall" aria-label="Un posto in più"><span class="ic">＋</span><span>+1 posto</span></button>
+      <button id="btnRestart" aria-label="Ricomincia"><span class="ic">⟳</span><span>Rifai</span></button>
+    </nav>
+
+    <div id="toast"></div>
+
+    <div id="overlay" hidden>
+      <div class="card">
+        <div class="emoji" id="ovEmoji">🎉</div>
+        <h1 id="ovTitle">Livello completato!</h1>
+        <p id="ovText"></p>
+        <div class="actions" id="ovActions"></div>
+      </div>
+    </div>
+
+    <pre id="debug" hidden></pre>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
