@@ -3,11 +3,21 @@ import { Board, GameState, addStall, cloneState, initialState, lift, tap } from 
 import { generateLevel } from './game/generator';
 import { solve } from './game/solver';
 import { Level, difficultyLabel } from './game/types';
-import { Scene } from './render/scene';
+import { Timeline } from './render/timeline';
+import { View3D } from './render/view3d';
+import { Theme, themeForLevel } from './render/themes';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>('game');
-const ctx = canvas.getContext('2d')!;
+const fxCanvas = $<HTMLCanvasElement>('fx');
+let view: View3D;
+try {
+  view = new View3D(canvas, fxCanvas);
+} catch {
+  document.body.innerHTML = '<p style="padding:24px;font:700 18px system-ui">Questo browser non supporta la grafica 3D (WebGL).</p>';
+  throw new Error('WebGL non disponibile');
+}
+let theme: Theme | null = null;
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has('debug');
 const STORE_KEY = 'ingorgo.level';
@@ -23,7 +33,7 @@ let level: Level;
 let board: Board;
 let state: GameState;
 let history: GameState[] = [];
-let scene: Scene;
+let scene: Timeline;
 let overlayShown = false;
 let endHandled = false;
 let helped = false; // ha usato annulla, aiuto, gru o +1 posto
@@ -62,9 +72,16 @@ function loadLevel(n: number) {
   state = initialState(level);
   history = [];
   helped = false;
-  scene = new Scene(level);
-  layout();
+  scene = new Timeline(level);
   scene.rebuild(state, now(), true);
+  const th = themeForLevel(n);
+  const newWorld = theme !== null && theme.id !== th.id;
+  theme = th;
+  view.setLevel(scene, th);
+  document.body.style.background = th.page;
+  document.body.classList.toggle('night', th.night);
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', th.sky);
+  layout();
   overlayShown = false;
   endHandled = false;
   $('overlay').hidden = true;
@@ -76,18 +93,16 @@ function loadLevel(n: number) {
   else if (n === 3) toast('Se tutti i posti si riempiono senza il colore giusto, perdi', 3500);
   else if (n === 4) toast('Il parcheggio ora è in diagonale: segui bene le frecce', 3500);
   else if (n === 8) toast('Garage: il numero dice quanti bus ci sono dentro, escono uno alla volta', 4500);
+  else if (newWorld || (n > 1 && (n - 1) % 10 === 0)) toast(`Nuovo mondo: ${th.name}`, 2600);
 }
 
 function layout() {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const w = window.innerWidth,
     h = window.innerHeight;
-  canvas.width = Math.round(w * dpr);
-  canvas.height = Math.round(h * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const top = $('hud').getBoundingClientRect().bottom + 4;
   const bottom = h - $('bar').getBoundingClientRect().top + 4;
-  scene.resize(w, h, top, bottom, dpr);
+  view.resize(w, h, top, bottom, dpr);
 }
 
 const TAG_CLASS: Record<string, string> = {
@@ -157,7 +172,7 @@ function showOverlay(kind: 'win' | 'lose', title: string, text: string, actions:
 function onTap(sx: number, sy: number) {
   if (overlayShown || state.status !== 'playing') return;
   const t = now();
-  const id = scene.hit(sx, sy, t);
+  const id = view.hit(sx, sy, t);
   if (id === null) return;
   const before = cloneState(state);
   if (liftArmed) {
@@ -228,6 +243,7 @@ function extraStall() {
   helped = true;
   addStall(board, state);
   scene.setStalls(state.slots.length);
+  view.refreshBays();
   resetEnd();
   updateHud();
   toast('Un posto in più per questo livello');
@@ -245,7 +261,7 @@ function hint() {
 // ---------- ciclo principale ----------
 function frame() {
   const t = now();
-  scene.draw(ctx, t);
+  view.render(t);
   $('queueLeft').textContent = String(level.queue.length - scene.queueLeft(t));
   if (!overlayShown && state.status === 'won' && scene.allBoarded(t)) {
     if (!endHandled) {
@@ -304,7 +320,6 @@ window.addEventListener('resize', () => {
   layout();
 });
 document.addEventListener('gesturestart', (e) => e.preventDefault());
-// ridisegna lo sfondo quando arrivano i font
 document.fonts?.ready.then(() => layout());
 
 loadLevel(levelNum);
@@ -318,7 +333,7 @@ if (DEBUG) {
     solution: () => solve(board, state, 200_000),
     screenOf: (id: number) => {
       const vb = scene.buses[id];
-      return scene.cam.p(vb.lotX, vb.lotY, 0.74);
+      return view.screenOf(vb.lotX, vb.lotY, 0.74);
     },
     status: () => ({ status: state.status, moves: state.moves, qi: state.qi, slots: state.slots.length }),
   };

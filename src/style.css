@@ -39,6 +39,9 @@ canvas {
   touch-action: none;
   display: block;
 }
+#fx {
+  pointer-events: none;
+}
 button {
   font: inherit;
   color: inherit;
@@ -326,4 +329,9 @@ input:focus-visible {
   .tag { font-size: 14px; padding: 0 9px; }
   .chip-label .long { display: none; }
   .chip-label .short { display: inline; }
+}
+
+/* mondo notturno: etichette chiare sotto i pulsanti */
+body.night #bar button > span:last-child {
+  color: #fff;
 }
