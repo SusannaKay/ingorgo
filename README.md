@@ -1,67 +1,83 @@
 # Ingorgo! 🚌
 
-Puzzle "bus jam" per browser mobile: tocca un bus per farlo uscire dal parcheggio seguendo la freccia, i passeggeri in coda salgono solo sul bus del loro colore. Se gli stalli d'attesa si riempiono e nessun bus va bene per chi è in testa alla coda, hai perso.
+A "bus jam" puzzle game for mobile browsers. **[Play it here](https://ingorgo.vercel.app)**.
 
-Vite + TypeScript, Canvas 2D, nessuna dipendenza a runtime (~11 kB gzip).
+Tap a bus and it leaves the parking lot following its arrow. Passengers wait in line and only get on the bus of their color. Buses that nobody can board wait in the stalls, and if the stalls fill up before the person at the front of the line finds a ride, you lose.
 
-## Comandi
+*Ingorgo* is Italian for traffic jam. I got hooked on this kind of game on my phone and wanted to see how hard it would be to make one, especially the part I cared about most: levels that keep getting harder without ever becoming impossible.
+
+<!-- screenshot / gif of a level -->
+
+---
+
+## Features
+
+- **Endless levels**, generated on the fly and always solvable
+- **Same level everywhere**: the level number is the random seed, so level 342 is identical on every phone, with nothing to download or save
+- **Six themed worlds** (city, snow, beach, night, desert, autumn) that change every 10 levels
+- **Mechanics that show up as you go**: parking lots with weird shapes, rotated 45°, garages that release hidden buses one at a time
+- **Helpers**: undo, hint (the solver shows you the right move, or tells you the level can't be won anymore from there), crane (lifts any bus, once per level), +1 stall, restart
+- Runs in the browser and can be added to the home screen
+
+---
+
+## How the levels are generated
+
+This is the part I find most interesting. Every level goes through three steps:
+
+1. **Reverse placement.** Buses are placed one at a time, and each new bus must have a clear way out with respect to the ones already placed (it's allowed to block them, though). This guarantees that leaving in reverse placement order always works: no circular deadlocks.
+2. **A queue built from a solution.** The game picks an exit order that respects the blocks and simulates it, generating passengers so that at most a given number of stalls is ever occupied. The level is solvable by construction.
+3. **Picking by perceived difficulty.** For each level the generator builds up to 28 candidates and has a simulated "reasonable but distracted" player play each one dozens of times. It keeps the candidate whose win rate is closest to the target for that level.
+
+The difficulty curve rises quickly at first, with a sawtooth pattern on blocks of 10 levels: climb, a breather level, then a boss on the tenth. Past level 100 it goes into overdrive: more colors, more buses, and eventually only 3 stalls.
+
+`npm run check-levels` generates a range of levels and verifies each one with the solver.
+
+---
+
+## Tech
+
+- **TypeScript + Vite**, no framework
+- **Three.js** for the 3D view, loaded from a CDN through an import map, so the game itself is about 25 kB gzipped
+- Game logic (`src/game/`) is completely separate from rendering (`src/render/`): the engine is instant and pure, and the renderer turns each event into an animation timeline
+
+```text
+src/game/
+  types.ts        cells, buses, exit paths
+  engine.ts       game rules: tap, boarding, win/lose, crane, extra stall
+  generator.ts    level generator and difficulty curve
+  solver.ts       DFS solver, used for hints and level checks
+  rng.ts          seeded random generator
+src/render/
+  view3d.ts       Three.js scene
+  timeline.ts     turns game events into animations
+  themes.ts       the six worlds
+src/main.ts       UI, input, overlays
+scripts/check-levels.ts
+```
+
+---
+
+## Run it locally
 
 ```bash
 npm install
-npm run dev            # server di sviluppo (raggiungibile anche dal telefono in LAN)
-npm run build          # build in dist/
-npm run check-levels -- 200   # genera e verifica i livelli 1..200
+npm run dev               # dev server, reachable from your phone on the same Wi-Fi
+npm run build             # production build in dist/
+npm run check-levels -- 200   # generate and verify levels 1 to 200
 ```
 
-## Deploy su Vercel
+URL parameters:
 
-Importa il repository su Vercel: riconosce Vite da solo (build `npm run build`, output `dist`). Oppure da terminale:
+- `?level=42` opens a specific level (tapping the level number at the top does the same)
+- `?debug=1` shows the level stats: difficulty, estimated win rate, longest blocking chain
 
-```bash
-npx vercel --prod
-```
+Every push to `main` is deployed to Vercel automatically.
 
-## Parametri utili nell'URL
+---
 
-- `?level=42` apre un livello specifico (anche toccando "Livello N" in alto)
-- `?debug=1` mostra le statistiche del livello (difficoltà, % vittorie stimata, catena di blocchi)
+## Ideas for later
 
-## Struttura
-
-```
-src/game/types.ts      tipi, celle, strade d'uscita
-src/game/engine.ts     logica pura: tocco, imbarco, vittoria/sconfitta, +1 posto
-src/game/generator.ts  generatore di livelli e curva di difficoltà
-src/game/solver.ts     solver DFS (usato per il pulsante Aiuto e per le verifiche)
-src/render/camera.ts   proiezione finto 3D (yaw, inclinazione, altezza)
-src/render/scene.ts    animazioni a timeline e disegno
-src/main.ts            interfaccia, input, overlay
-scripts/check-levels.ts  verifica dei livelli
-```
-
-## Come vengono generati i livelli
-
-1. **Piazzamento inverso.** I bus si piazzano uno alla volta e ognuno deve avere la strada libera rispetto a quelli già piazzati (ma può bloccarli). Così l'ordine inverso di piazzamento è sempre un'uscita valida: niente incastri circolari.
-2. **Coda costruita da una soluzione.** Si sceglie un ordine d'uscita compatibile con i blocchi e si simula, generando i passeggeri in modo che al massimo `maxOcc` stalli siano occupati. Il livello è risolvibile per costruzione.
-3. **Selezione per difficoltà percepita.** Per ogni livello si generano 18 candidati e si fanno giocare 80 partite a un giocatore simulato "ragionevole ma distratto". Si tiene il candidato con la % di vittorie più vicina all'obiettivo del livello.
-
-La curva (`difficultyForLevel`) sale in modo esponenziale smorzato con un dente di sega su blocchi di 10: salita, livello "respiro", boss al decimo. Tutto è deterministico: il seed è il numero del livello, quindi lo stesso livello è identico su ogni dispositivo senza salvare nulla.
-
-Manopole in `paramsForLevel`: dimensione griglia, numero di bus, colori, stalli (5, poi 4), quota di bus lunghi, quanto il piazzamento cerca blocchi, quanto la coda "va contro" l'ordine naturale d'uscita, % di vittorie obiettivo.
-
-## Vista
-
-In `src/render/camera.ts`: `yaw` ruota la scena (0 = vista frontale 3/4 come l'originale, valori più alti = più isometrico), `squash` è l'inclinazione della camera, `zk` l'altezza dei bus.
-
-## Meccaniche
-
-- **Forme del parcheggio**: rettangolo, blob, anello con buco, rombo, gemelli, clessidra; dal livello 4 anche ruotate di 45°. La griglia logica è ruotata nel mondo (`theta`, `tx`, `ty` nel livello) e `mask` dice quali celle esistono.
-- **Garage**: muri fissi che sfornano 2-5 bus nascosti uno alla volta nelle celle davanti. Nel motore i bus di un garage condividono le celle e dipendono dal precedente (`prev`). Il generatore piazza i garage per primi, così nessuna strada d'uscita li attraversa e la risolvibilità resta garantita.
-- **Gru**: una volta per livello solleva qualsiasi bus visibile, anche bloccato, e lo porta in uno stallo.
-
-## Idee per i prossimi passi
-
-- Altre meccaniche: bus chiusi a chiave, colore nascosto "?", ambulanza a mosse limitate, timer.
-- Suoni e vibrazione più ricca, monete e boost a pagamento.
-- Coda dei bus in attesa sulla strada (ora possono sovrapporsi se tocchi molto in fretta).
-- Service worker per giocare offline.
+- More mechanics: locked buses, hidden "?" colors, an ambulance with limited moves
+- Sounds
+- Offline play with a service worker
