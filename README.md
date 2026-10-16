@@ -4,7 +4,7 @@ A "bus jam" puzzle game for mobile browsers. **[Play it here](https://ingorgo.ve
 
 Tap a bus and it leaves the parking lot following its arrow. Passengers wait in line and only get on the bus of their color. Buses that nobody can board wait in the stalls, and if the stalls fill up before the person at the front of the line finds a ride, you lose.
 
-*Ingorgo* is Italian for traffic jam. I got hooked on this kind of game on my phone and wanted to see how hard it would be to make one, especially the part I cared about most: levels that keep getting harder without ever becoming impossible.
+*Ingorgo* is Italian for traffic jam. I like this kind of game, but the free ones on the app stores are more ads than game: thirty seconds of puzzle, thirty seconds of video. So I made my own to play & chill, with no ads, ever. The part I cared about most was the levels: they should keep getting harder without ever becoming impossible.
 
 <!-- screenshot / gif of a level -->
 
