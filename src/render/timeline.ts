@@ -1,7 +1,7 @@
 // Stato visivo indipendente dal renderer: percorsi, tempi, pose di bus e passeggeri.
 // La logica di gioco è istantanea; qui ogni evento diventa movimento nel tempo.
 // Coordinate del mondo: x verso destra, y verso chi guarda, z in alto.
-import { Level, busCells, toWorld } from '../game/types';
+import { DX, DY, Dir, Level, busCells, toWorld } from '../game/types';
 import { GameEvent, GameState } from '../game/engine';
 
 export const SPEED = 25; // celle al secondo
@@ -10,6 +10,7 @@ const BOARD_GAP = 0.045;
 export const DIR_ANG = [-Math.PI / 2, 0, Math.PI / 2, Math.PI];
 export const BUS_H = 0.78;
 export const BUS_W = 0.8;
+export const SLIDE_T = 0.13; // durata dello scivolamento di una cella
 
 // ---------- percorsi con curve vere e accelerazione ----------
 type PathPt = { x: number; y: number; a: number; d: number };
@@ -115,14 +116,21 @@ export interface VBus {
   filledBase: number;
   lands: number[];
   fullAt: number;
-  bump: { t0: number; dur: number; dist: number } | null;
+  bump: { t0: number; dur: number; dist: number; fx: number; fy: number } | null;
+  /** scivolamento in corso: da (sx, sy) a (lotX, lotY) */
+  slideT0: number;
+  sx: number;
+  sy: number;
+  /** freccia del suggerimento (angolo nel mondo), null se il consiglio è "esci" */
+  hintA: number | null;
+  /** cella logica attuale (coda del bus) */
+  cell: [number, number];
   shakeAt: number;
   flashAt: number;
   hintUntil: number;
   dropAt: number;
   hopAt: number;
   emergeAt: number;
-  next: number;
   garageX: number;
   garageY: number;
   lb: LBox;
@@ -233,18 +241,15 @@ export class Timeline {
   rebuild(state: GameState, now: number, intro = false) {
     this.K = state.slots.length;
     const L = this.level;
-    const nextOf = new Map<number, number>();
-    for (const b of L.buses) if ((b.prev ?? -1) >= 0) nextOf.set(b.prev!, b.id);
     this.garages = L.garages.map((g) => {
       const lb = boxOf(g);
       const [x, y] = toWorld(L, (lb.minX + lb.maxX) / 2, (lb.minY + lb.maxY) / 2);
       return { id: g.id, x, y, a: DIR_ANG[g.dir] + L.theta, lb, cars: g.cars };
     });
     this.buses = L.buses.map((b) => {
-      const lb = boxOf(b);
+      const lb = boxOf({ x: state.px[b.id], y: state.py[b.id], dir: b.dir, len: b.len });
       const [lotX, lotY] = toWorld(L, (lb.minX + lb.maxX) / 2, (lb.minY + lb.maxY) / 2);
       const g = b.garage !== undefined ? this.garages[b.garage] : null;
-      const prev = b.prev ?? -1;
       return {
         id: b.id,
         color: b.color,
@@ -261,13 +266,17 @@ export class Timeline {
         lands: [],
         fullAt: Infinity,
         bump: null,
+        slideT0: -9,
+        sx: lotX,
+        sy: lotY,
+        hintA: null,
+        cell: [state.px[b.id], state.py[b.id]],
         shakeAt: -9,
         flashAt: -9,
         hintUntil: 0,
         dropAt: intro ? now + 0.1 + lotY * 0.05 + lotX * 0.025 : -9,
         hopAt: -9,
-        emergeAt: prev < 0 || state.removed[prev] ? -9 : Infinity,
-        next: nextOf.get(b.id) ?? -1,
+        emergeAt: state.hidden[b.id] ? Infinity : -9,
         garageX: g ? g.x : lotX,
         garageY: g ? g.y : lotY,
         lb,
@@ -304,11 +313,46 @@ export class Timeline {
     return vb.inM ? vb.inM.t0 + vb.inM.T : Infinity;
   }
 
+  private gridOf(vb: VBus): [number, number] {
+    return vb.cell;
+  }
+
+  /** centro nel mondo di un bus nella cella (x, y) della griglia */
+  private worldOf(x: number, y: number, dir: Dir, len: number): [number, number] {
+    const lb = boxOf({ x, y, dir, len });
+    return toWorld(this.level, (lb.minX + lb.maxX) / 2, (lb.minY + lb.maxY) / 2);
+  }
+
   apply(events: GameEvent[], now: number, lifted = false) {
+    let prev: GameEvent['type'] | null = null;
     for (const e of events) {
       const vb = this.buses[e.id];
+      const before = prev;
+      prev = e.type;
+      if (e.type === 'slide') {
+        const b = this.level.buses[e.id];
+        // posizione attuale (anche a metà di uno scivolamento precedente)
+        const p = this.pose(vb, now);
+        vb.sx = p.x;
+        vb.sy = p.y;
+        vb.slideT0 = now;
+        // nuova cella: quella vecchia spostata di uno nella direzione dello scorrimento
+        const [cx, cy] = this.gridOf(vb);
+        [vb.lotX, vb.lotY] = this.worldOf(cx + DX[e.dir], cy + DY[e.dir], b.dir, b.len);
+        vb.cell = [cx + DX[e.dir], cy + DY[e.dir]];
+        vb.bump = null;
+        vb.hintUntil = 0;
+        this.settleAt = Math.max(this.settleAt, now + SLIDE_T);
+        continue;
+      }
+      if (e.type === 'emerge') {
+        // aspetta che il bus davanti si sia tolto di mezzo
+        vb.emergeAt = now + (before === 'slide' ? SLIDE_T * 0.7 : lifted ? 0.6 : 0.22);
+        this.settleAt = Math.max(this.settleAt, vb.emergeAt + 0.32);
+        continue;
+      }
       if (e.type === 'enter') {
-        if (vb.next >= 0) this.buses[vb.next].emergeAt = now + (lifted ? 0.6 : 0.22);
+        vb.hintUntil = 0;
         let bay = -1;
         for (let i = 0; i < this.K; i++)
           if (this.bayOwner[i] < 0 && (bay < 0 || this.slotFreeAt[i] < this.slotFreeAt[bay])) bay = i;
@@ -399,7 +443,7 @@ export class Timeline {
   bump(id: number, blocker: number, dist: number, now: number) {
     const vb = this.buses[id];
     const dur = 0.2 + 0.045 * dist;
-    vb.bump = { t0: now, dur, dist: dist + 0.08 };
+    vb.bump = { t0: now, dur, dist: dist + 0.08, fx: Math.cos(vb.lotA), fy: Math.sin(vb.lotA) };
     vb.flashAt = now;
     const hitT = now + dur / 2;
     if (blocker >= 0) this.buses[blocker].shakeAt = hitT;
@@ -415,8 +459,18 @@ export class Timeline {
     this.shakeT = hitT;
   }
 
-  hint(id: number, now: number) {
-    this.buses[id].hintUntil = now + 3;
+  /** scorrimento impossibile: piccolo colpo nella direzione tentata */
+  nudge(id: number, dir: Dir, now: number) {
+    const vb = this.buses[id];
+    const a = Math.atan2(DY[dir], DX[dir]) + this.level.theta;
+    vb.bump = { t0: now, dur: 0.18, dist: 0.13, fx: Math.cos(a), fy: Math.sin(a) };
+  }
+
+  /** suggerimento: il bus lampeggia; con una direzione, compare anche una freccia */
+  hint(id: number, now: number, dir: Dir | null = null) {
+    const vb = this.buses[id];
+    vb.hintUntil = now + 3;
+    vb.hintA = dir === null ? null : Math.atan2(DY[dir], DX[dir]) + this.level.theta;
   }
 
   celebrate(now: number) {
@@ -519,6 +573,15 @@ export class Timeline {
       y = vb.lotY;
     const fx = Math.cos(vb.lotA),
       fy = Math.sin(vb.lotA);
+    const ts = now - vb.slideT0;
+    let squash = 1;
+    if (ts < SLIDE_T) {
+      const u = Math.max(0, ts / SLIDE_T);
+      const e = 1 - (1 - u) * (1 - u) * (1 - u);
+      x = vb.sx + (vb.lotX - vb.sx) * e;
+      y = vb.sy + (vb.lotY - vb.sy) * e;
+      squash = 1 - 0.06 * Math.sin(Math.PI * u);
+    }
     let z = 0,
       hk = 1,
       alpha = 1,
@@ -543,8 +606,8 @@ export class Timeline {
       if (u >= 1) vb.bump = null;
       else if (u > 0) {
         const s = u < 0.5 ? Math.sin((Math.PI / 2) * (u / 0.5)) : 1 - (1 - Math.cos(Math.PI * (u - 0.5))) / 2;
-        x += fx * vb.bump.dist * s;
-        y += fy * vb.bump.dist * s;
+        x += vb.bump.fx * vb.bump.dist * s;
+        y += vb.bump.fy * vb.bump.dist * s;
       }
     }
     const st = now - vb.shakeAt;
@@ -553,7 +616,7 @@ export class Timeline {
       x += -fy * j;
       y += fx * j;
     }
-    return { x, y, a: vb.lotA, phase: 'lot', z, hk, pop, alpha };
+    return { x, y, a: vb.lotA, phase: 'lot', z, hk: hk * squash, pop, alpha };
   }
 
   /** il bus si può toccare adesso */

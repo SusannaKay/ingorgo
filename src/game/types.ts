@@ -17,13 +17,14 @@ export interface Bus {
   len: number;
   color: number;
   cap: number;
-  /** indice del garage da cui esce (solo per i bus nascosti nei garage) */
+  /** indice del garage in cui il bus è nascosto all'inizio (assente per i bus visibili) */
   garage?: number;
-  /** bus che deve uscire dal garage prima di questo (-1 se è il primo) */
-  prev?: number;
 }
 
-/** Garage: occupa `len` celle e sforna i suoi bus uno alla volta nelle celle davanti. */
+/**
+ * Garage: occupa `len` celle e sforna i suoi bus uno alla volta nelle 2 celle davanti,
+ * appena quelle celle sono libere. `cars` = bus nascosti all'inizio, in ordine di uscita.
+ */
 export interface Garage {
   id: number;
   x: number;
@@ -33,11 +34,18 @@ export interface Garage {
   cars: number[];
 }
 
+/** Una mossa: `d` = -1 tocco (il bus esce), 0..3 scorrimento di una cella in quella direzione. */
+export interface Op {
+  id: number;
+  d: -1 | Dir;
+}
+
 export interface LevelStats {
-  difficulty: number; // 0..1
-  winRate: number; // % vittorie del giocatore simulato
-  targetWinRate: number;
-  maxChain: number; // catena di blocchi più lunga
+  difficulty: number; // 0..1.3
+  slides: number; // scorrimenti nella soluzione prevista
+  fill: number; // quota di celle occupate all'inizio
+  blocked: number; // bus visibili che all'inizio non possono uscire
+  tapsOnly: boolean; // risolvibile anche senza scorrimenti
   candidates: number;
 }
 
@@ -56,13 +64,15 @@ export interface Level {
   /** 1 = cella del parcheggio, 0 = fuori forma */
   mask: number[];
   shape: string;
+  /** celle con ostacoli fissi (fioriere): bloccano uscite e scorrimenti */
+  blocks: number[];
   garages: Garage[];
   stalls: number;
   buses: Bus[];
   /** colori dei passeggeri, in ordine di coda */
   queue: number[];
-  /** un ordine di uscita vincente (garantito per costruzione) */
-  solution: number[];
+  /** una sequenza di mosse vincente (garantita per costruzione) */
+  solution: Op[];
   stats: LevelStats;
 }
 

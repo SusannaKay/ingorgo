@@ -1,8 +1,8 @@
 import './style.css';
-import { Board, GameState, addStall, cloneState, initialState, lift, tap } from './game/engine';
+import { Board, GameState, addStall, cloneState, initialState, lift, slide, tap } from './game/engine';
 import { generateLevel } from './game/generator';
-import { solve } from './game/solver';
-import { Level, difficultyLabel } from './game/types';
+import { hintMove } from './game/solver';
+import { DX, DY, Dir, Level, difficultyLabel } from './game/types';
 import { Timeline } from './render/timeline';
 import { View3D } from './render/view3d';
 import { Theme, themeForLevel } from './render/themes';
@@ -38,8 +38,19 @@ let overlayShown = false;
 let endHandled = false;
 let helped = false; // ha usato annulla, aiuto, gru o +1 posto
 let liftArmed = false;
+let hintExplained = false;
 
 const now = () => performance.now() / 1000;
+
+function seenGarage(): boolean {
+  try {
+    if (localStorage.getItem('ingorgo.garage')) return true;
+    localStorage.setItem('ingorgo.garage', '1');
+  } catch {
+    /* storage non disponibile */
+  }
+  return false;
+}
 
 // I livelli si generano in anticipo, mentre giochi quello corrente.
 const cache = new Map<number, Level>();
@@ -88,11 +99,11 @@ function loadLevel(n: number) {
   updateHud();
   pregenerate(n + 1);
   setLiftArmed(false);
-  if (n === 1) toast('Tocca un bus: esce seguendo la freccia', 3500);
-  else if (n === 2) toast('I passeggeri salgono solo sul bus del loro colore', 3500);
+  if (n === 1) toast('Tocca un bus: esce seguendo la freccia. I passeggeri salgono sul bus del loro colore', 4500);
+  else if (n === 2) toast('Trascina un bus per farlo scorrere nelle caselle libere, come nel gioco del 15', 4500);
   else if (n === 3) toast('Se tutti i posti si riempiono senza il colore giusto, perdi', 3500);
-  else if (n === 4) toast('Il parcheggio ora è in diagonale: segui bene le frecce', 3500);
-  else if (n === 8) toast('Garage: il numero dice quanti bus ci sono dentro, escono uno alla volta', 4500);
+  else if (n === 4) toast('Il parcheggio ora è in diagonale: trascina lungo le righe delle caselle', 3500);
+  else if (level.garages.length && !seenGarage()) toast('Garage: appena lo spazio davanti si libera, esce il bus successivo', 4500);
   else if (newWorld || (n > 1 && (n - 1) % 10 === 0)) toast(`Nuovo mondo: ${th.name}`, 2600);
 }
 
@@ -126,8 +137,8 @@ function updateHud() {
     const d = $('debug');
     d.hidden = false;
     const s = level.stats;
-    d.textContent = `diff ${s.difficulty.toFixed(2)}  win ${(s.winRate * 100).toFixed(0)}% (target ${(s.targetWinRate * 100).toFixed(0)}%)
-${level.w}x${level.h}  bus ${level.buses.length}  stalli ${state.slots.length}  catena ${s.maxChain}
+    d.textContent = `diff ${s.difficulty.toFixed(2)}  pieno ${(s.fill * 100).toFixed(0)}%  bloccati ${s.blocked}
+${level.w}x${level.h}  bus ${level.buses.length}  stalli ${state.slots.length}  fioriere ${level.blocks.length}
 coda ${level.queue.length}  mosse ${state.moves}`;
   }
 }
@@ -169,11 +180,14 @@ function showOverlay(kind: 'win' | 'lose', title: string, text: string, actions:
 }
 
 // ---------- azioni ----------
-function onTap(sx: number, sy: number) {
-  if (overlayShown || state.status !== 'playing') return;
+function playing() {
+  return !overlayShown && state.status === 'playing';
+}
+
+/** tocco senza trascinare: il bus esce (o la gru lo solleva) */
+function onTap(id: number) {
+  if (!playing()) return;
   const t = now();
-  const id = view.hit(sx, sy, t);
-  if (id === null) return;
   const before = cloneState(state);
   if (liftArmed) {
     const r = lift(board, state, id);
@@ -197,6 +211,72 @@ function onTap(sx: number, sy: number) {
     navigator.vibrate?.(8);
   }
   updateHud();
+}
+
+/** vettore sullo schermo di una cella nella direzione d, vicino al bus */
+function screenStep(id: number, d: Dir): [number, number] {
+  const vb = scene.buses[id];
+  const c = Math.cos(level.theta),
+    sn = Math.sin(level.theta);
+  const wx = c * DX[d] - sn * DY[d],
+    wy = sn * DX[d] + c * DY[d];
+  const [x0, y0] = view.screenOf(vb.lotX, vb.lotY, 0.4);
+  const [x1, y1] = view.screenOf(vb.lotX + wx, vb.lotY + wy, 0.4);
+  return [x1 - x0, y1 - y0];
+}
+
+/** direzione della griglia più vicina al trascinamento e lunghezza di una cella sullo schermo */
+function dragDir(id: number, dx: number, dy: number): { d: Dir; cell: number } {
+  let best: Dir = 0,
+    bestDot = -Infinity,
+    cell = 40;
+  for (let d = 0; d < 4; d++) {
+    const [sx, sy] = screenStep(id, d as Dir);
+    const len = Math.hypot(sx, sy) || 1;
+    const dot = (dx * sx + dy * sy) / len;
+    if (dot > bestDot) {
+      bestDot = dot;
+      best = d as Dir;
+      cell = len;
+    }
+  }
+  return { d: best, cell };
+}
+
+interface Drag {
+  id: number;
+  x: number;
+  y: number;
+  slid: boolean;
+  nudged: boolean;
+}
+let drag: Drag | null = null;
+
+function onDragMove(e: PointerEvent) {
+  if (!drag || !playing() || liftArmed) return;
+  const dx = e.clientX - drag.x,
+    dy = e.clientY - drag.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 12) return;
+  const { d, cell } = dragDir(drag.id, dx, dy);
+  if (dist < Math.max(12, cell * 0.42)) return;
+  const t = now();
+  const before = cloneState(state);
+  const r = slide(board, state, drag.id, d);
+  if (r.kind === 'slid') {
+    // un trascinamento lungo può far scorrere più celle: si annulla tutto in una volta
+    if (!drag.slid) history.push(before);
+    drag.slid = true;
+    scene.apply(r.events, t);
+    navigator.vibrate?.(5);
+    updateHud();
+  } else if (r.kind === 'blocked' && !drag.nudged) {
+    drag.nudged = true;
+    scene.nudge(drag.id, d, t);
+    navigator.vibrate?.(15);
+  }
+  drag.x = e.clientX;
+  drag.y = e.clientY;
 }
 
 function setLiftArmed(on: boolean) {
@@ -252,10 +332,15 @@ function extraStall() {
 function hint() {
   if (state.status !== 'playing') return;
   helped = true;
-  const r = solve(board, state, 120_000);
-  if (r.result === 'found') scene.hint(r.moves[0], now());
-  else if (r.result === 'none') toast('Da qui non si vince più: annulla qualche mossa', 3000);
-  else toast('Situazione intricata: prova ad annullare una mossa', 2500);
+  const r = hintMove(board, state);
+  if (r.kind === 'move') {
+    scene.hint(r.op.id, now(), r.op.d < 0 ? null : (r.op.d as Dir));
+    if (r.op.d >= 0 && !hintExplained) {
+      hintExplained = true;
+      toast('Fai scorrere il bus nella direzione della freccia gialla', 2600);
+    }
+  } else if (r.kind === 'none') toast('Da qui non si vince più: annulla qualche mossa', 3000);
+  else toast('Situazione intricata: prova ad annullare qualche mossa', 2500);
 }
 
 // ---------- ciclo principale ----------
@@ -293,8 +378,26 @@ function frame() {
 
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
-  onTap(e.clientX, e.clientY);
+  if (!playing()) return;
+  const id = view.hit(e.clientX, e.clientY, now());
+  if (id === null) return;
+  if (liftArmed) {
+    onTap(id);
+    return;
+  }
+  drag = { id, x: e.clientX, y: e.clientY, slid: false, nudged: false };
+  canvas.setPointerCapture?.(e.pointerId);
 });
+canvas.addEventListener('pointermove', onDragMove);
+const endDrag = (e: PointerEvent) => {
+  if (!drag) return;
+  const d = drag;
+  drag = null;
+  canvas.releasePointerCapture?.(e.pointerId);
+  if (!d.slid && !d.nudged && e.type === 'pointerup') onTap(d.id);
+};
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
 $('btnUndo').onclick = undo;
 $('btnRestart').onclick = restart;
 $('btnStall').onclick = extraStall;
@@ -330,11 +433,12 @@ if (DEBUG) {
   (window as any).__game = {
     free: () => board.freeBuses(state),
     scene: () => scene,
-    solution: () => solve(board, state, 200_000),
+    solution: () => level.solution,
     screenOf: (id: number) => {
       const vb = scene.buses[id];
       return view.screenOf(vb.lotX, vb.lotY, 0.74);
     },
+    step: (id: number, d: Dir) => screenStep(id, d),
     status: () => ({ status: state.status, moves: state.moves, qi: state.qi, slots: state.slots.length }),
   };
 }

@@ -98,6 +98,7 @@ export class View3D {
   private bodies!: THREE.InstancedMesh;
   private heads!: THREE.InstancedMesh;
   private ring!: THREE.Mesh;
+  private hintArrow!: THREE.Group;
   private parts!: THREE.InstancedMesh;
   private tl!: Timeline;
   private theme!: Theme;
@@ -337,6 +338,16 @@ export class View3D {
       tiles.setColorAt(i, this.tmpC.set((x + y) % 2 ? T.lot : T.lotAlt));
     });
     this.world.add(tiles);
+
+    // fioriere: ostacoli fissi
+    const leaf = { city: '#4fae5a', snow: '#2f7d5b', beach: '#3fae5d', night: '#2f6b4d', desert: '#4f9a5a', autumn: '#e8742c' }[T.id];
+    for (const c of L.blocks) {
+      const [wx, wy] = toWorld(L, (c % L.gw) + 0.5, Math.floor(c / L.gw) + 0.5);
+      const pl = planter(leaf, T.id === 'snow');
+      pl.position.copy(V(wx, wy, 0.12));
+      pl.rotation.y = -L.theta;
+      this.world.add(pl);
+    }
 
     this.decorate();
   }
@@ -611,6 +622,23 @@ export class View3D {
     this.ring = new THREE.Mesh(new THREE.RingGeometry(0.17 * PERSON, 0.24 * PERSON, 28), new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.9 }));
     this.ring.rotation.x = -Math.PI / 2;
     this.world.add(this.ring);
+    // freccia del suggerimento: indica dove far scorrere il bus
+    this.hintArrow = new THREE.Group();
+    const ha = new THREE.Mesh(
+      geo('hintArrow', () => new THREE.ShapeGeometry(arrowShape(0.66, 0.58))),
+      new THREE.MeshBasicMaterial({ color: '#ffd23f', depthTest: false }),
+    );
+    const ho = new THREE.Mesh(
+      geo('hintArrowO', () => new THREE.ShapeGeometry(arrowShape(0.66, 0.58, 1.22))),
+      new THREE.MeshBasicMaterial({ color: INK, depthTest: false }),
+    );
+    ha.rotation.x = ho.rotation.x = -Math.PI / 2;
+    ha.position.y = 0.002;
+    ha.renderOrder = 21;
+    ho.renderOrder = 20;
+    this.hintArrow.add(ho, ha);
+    this.hintArrow.visible = false;
+    this.world.add(this.hintArrow);
     const pm = new THREE.MeshBasicMaterial({ color: '#ffffff' });
     this.parts = new THREE.InstancedMesh(geo('part', () => new THREE.SphereGeometry(1, 8, 6)), pm, 240);
     for (let i = 0; i < 240; i++) this.parts.setColorAt(i, this.tmpC.set('#ffffff'));
@@ -668,6 +696,19 @@ export class View3D {
       const o = this.buses.get(vb.id)!;
       const p = tl.pose(vb, now);
       this.placeBus(o, vb, p, now);
+    }
+
+    // freccia del suggerimento
+    this.hintArrow.visible = false;
+    for (const vb of tl.buses) {
+      if (now >= vb.hintUntil || vb.hintA === null) continue;
+      const p = tl.pose(vb, now);
+      if (p.phase !== 'lot') continue;
+      const a = vb.hintA;
+      const r = Math.abs(Math.cos(a - vb.lotA)) * (vb.len - 0.16) / 2 + Math.abs(Math.sin(a - vb.lotA)) * 0.4 + 0.62 + 0.12 * Math.sin(now * 9);
+      this.hintArrow.position.copy(V(p.x + Math.cos(a) * r, p.y + Math.sin(a) * r, 0.95));
+      this.hintArrow.rotation.y = -a;
+      this.hintArrow.visible = true;
     }
 
     // garage: numero dei bus ancora dentro
@@ -854,6 +895,37 @@ export class View3D {
 }
 
 // ---------- decorazioni ----------
+function planter(leaf: string, snowy: boolean) {
+  const g = new THREE.Group();
+  const box = new THREE.Mesh(geo('planter', () => new RoundedBoxGeometry(0.86, 0.42, 0.86, 2, 0.08)), mat('planter', () => std('#c9bfae', 0.85)));
+  box.position.y = 0.21;
+  box.castShadow = box.receiveShadow = true;
+  g.add(box);
+  const rim = new THREE.Mesh(geo('planterRim', () => new THREE.BoxGeometry(0.72, 0.04, 0.72)), mat('soil', () => std('#6b4a32', 0.95)));
+  rim.position.y = 0.43;
+  g.add(rim);
+  const lm = mat(`leaf${leaf}`, () => std(leaf, 0.75));
+  const blobs: [number, number, number, number][] = [
+    [0, 0.62, 0, 0.3],
+    [0.17, 0.55, 0.1, 0.2],
+    [-0.15, 0.56, -0.1, 0.21],
+  ];
+  for (const [x, y, z, r] of blobs) {
+    const b = new THREE.Mesh(geo('blob', () => new THREE.IcosahedronGeometry(1, 2)), lm);
+    b.scale.setScalar(r);
+    b.position.set(x, y, z);
+    b.castShadow = true;
+    g.add(b);
+  }
+  if (snowy) {
+    const cap = new THREE.Mesh(geo('blob', () => new THREE.IcosahedronGeometry(1, 2)), mat('snowcap', () => std('#ffffff', 0.9)));
+    cap.scale.set(0.24, 0.1, 0.24);
+    cap.position.y = 0.88;
+    g.add(cap);
+  }
+  return g;
+}
+
 function roundTree(s: number, leaf: string, rng: () => number) {
   const g = new THREE.Group();
   const trunk = new THREE.Mesh(geo('trunk', () => new THREE.CylinderGeometry(0.08, 0.11, 0.6, 8)), mat('trunk', () => std('#8a5a3c', 0.9)));
