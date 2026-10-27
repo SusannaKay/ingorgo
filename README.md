@@ -6,7 +6,7 @@ Tap a bus and it leaves the parking lot following its arrow, if the road ahead i
 
 *Ingorgo* is Italian for traffic jam. I like this kind of game, but the free ones on the app stores are more ads than game: thirty seconds of puzzle, thirty seconds of video. So I made my own to play & chill, with no ads, ever. The part I cared about most was the levels: they should keep getting harder without ever becoming impossible.
 
-<!-- screenshot / gif of a level -->
+<p align="center"><img src="docs/ingorgo.gif" width="300" alt="Level 6: tapping buses out and sliding them into free cells"></p>
 
 ---
 
